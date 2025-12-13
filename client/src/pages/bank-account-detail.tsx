@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useRoute, Link } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -40,7 +41,8 @@ import { formatCurrency } from "@/lib/format";
 import { useAuth } from "@/lib/auth-context";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { formatDistanceToNow, format } from "date-fns";
+import { formatDistanceToNow, format, isSameMonth, startOfMonth } from "date-fns";
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 
 interface CategoryBreakdown {
   category: string;
@@ -149,12 +151,91 @@ const budgetGroupColors: Record<string, string> = {
   other: "bg-gray-100 text-gray-800 dark:bg-gray-900 dark:text-gray-200",
 };
 
+interface MonthGroup {
+  monthKey: string;
+  monthLabel: string;
+  isMTD: boolean;
+  transactions: EnrichedTransactionDetail[];
+  totalIncomeCents: number;
+  totalOutgoingCents: number;
+  categoryBreakdown: {
+    category: string;
+    transactions: EnrichedTransactionDetail[];
+    totalCents: number;
+  }[];
+}
+
+function groupTransactionsByMonth(transactions: EnrichedTransactionDetail[]): MonthGroup[] {
+  const now = new Date();
+  const monthMap = new Map<string, EnrichedTransactionDetail[]>();
+
+  transactions.forEach(tx => {
+    if (!tx.transactionDate) return;
+    const date = new Date(tx.transactionDate);
+    const monthKey = format(startOfMonth(date), "yyyy-MM");
+    if (!monthMap.has(monthKey)) {
+      monthMap.set(monthKey, []);
+    }
+    monthMap.get(monthKey)!.push(tx);
+  });
+
+  const sortedMonthKeys = Array.from(monthMap.keys()).sort((a, b) => b.localeCompare(a));
+
+  return sortedMonthKeys.map(monthKey => {
+    const txs = monthMap.get(monthKey)!;
+    const firstDate = new Date(txs[0].transactionDate!);
+    const isMTD = isSameMonth(firstDate, now);
+    const monthLabel = isMTD 
+      ? `${format(firstDate, "MMMM")} (MTD)` 
+      : format(firstDate, "MMMM yyyy");
+
+    const totalIncomeCents = txs
+      .filter(tx => tx.entryType === "incoming")
+      .reduce((sum, tx) => sum + Math.abs(tx.amountCents), 0);
+    const totalOutgoingCents = txs
+      .filter(tx => tx.entryType === "outgoing")
+      .reduce((sum, tx) => sum + Math.abs(tx.amountCents), 0);
+
+    const categoryMap = new Map<string, EnrichedTransactionDetail[]>();
+    txs.forEach(tx => {
+      const cat = tx.ukCategory || "other";
+      if (!categoryMap.has(cat)) {
+        categoryMap.set(cat, []);
+      }
+      categoryMap.get(cat)!.push(tx);
+    });
+
+    const categoryBreakdown = Array.from(categoryMap.entries()).map(([category, catTxs]) => ({
+      category,
+      transactions: catTxs.sort((a, b) => {
+        if (!a.transactionDate || !b.transactionDate) return 0;
+        return new Date(b.transactionDate).getTime() - new Date(a.transactionDate).getTime();
+      }),
+      totalCents: catTxs.reduce((sum, tx) => sum + Math.abs(tx.amountCents), 0),
+    })).sort((a, b) => b.totalCents - a.totalCents);
+
+    return {
+      monthKey,
+      monthLabel,
+      isMTD,
+      transactions: txs.sort((a, b) => {
+        if (!a.transactionDate || !b.transactionDate) return 0;
+        return new Date(b.transactionDate).getTime() - new Date(a.transactionDate).getTime();
+      }),
+      totalIncomeCents,
+      totalOutgoingCents,
+      categoryBreakdown,
+    };
+  });
+}
+
 export default function BankAccountDetail() {
   const [match, params] = useRoute("/current-finances/:id");
   const { user } = useAuth();
   const { toast } = useToast();
   const accountId = params?.id;
   const currency = user?.currency || "GBP";
+  const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
 
   const { data: account, isLoading, refetch } = useQuery<AccountDetailResponse>({
     queryKey: ["/api/current-finances/account", accountId],
@@ -232,8 +313,18 @@ export default function BankAccountDetail() {
     ? formatDistanceToNow(new Date(account.lastSyncedAt), { addSuffix: true })
     : "Never";
 
-  const incomeTransactions = account.transactions.filter(tx => tx.entryType === "incoming");
-  const outgoingTransactions = account.transactions.filter(tx => tx.entryType === "outgoing");
+  const filterByCategory = (transactions: EnrichedTransactionDetail[]) => {
+    if (!selectedCategory) return transactions;
+    return transactions.filter(tx => tx.ukCategory === selectedCategory);
+  };
+
+  const filteredTransactions = filterByCategory(account.transactions);
+  const incomeTransactions = filterByCategory(account.transactions.filter(tx => tx.entryType === "incoming"));
+  const outgoingTransactions = filterByCategory(account.transactions.filter(tx => tx.entryType === "outgoing"));
+
+  const selectedCategoryDisplay = selectedCategory 
+    ? account.categoryBreakdown.find(c => c.category === selectedCategory)?.displayName || selectedCategory.replace(/_/g, " ")
+    : null;
 
   return (
     <div className="container mx-auto max-w-6xl px-4 py-8">
@@ -381,14 +472,20 @@ export default function BankAccountDetail() {
           <Card>
             <CardHeader>
               <CardTitle>Spending by Category</CardTitle>
-              <CardDescription>Breakdown of your transactions by budget category</CardDescription>
+              <CardDescription>Click a category to filter transactions</CardDescription>
             </CardHeader>
             <CardContent>
               <div className="space-y-4">
                 {account.categoryBreakdown.map((cat) => {
                   const IconComponent = categoryIcons[cat.category] || HelpCircle;
+                  const isSelected = selectedCategory === cat.category;
                   return (
-                    <div key={cat.category} className="space-y-2" data-testid={`category-${cat.category}`}>
+                    <div 
+                      key={cat.category} 
+                      className={`space-y-2 p-2 rounded-md cursor-pointer hover-elevate transition-all ${isSelected ? "ring-2 ring-primary bg-primary/5" : ""}`}
+                      onClick={() => setSelectedCategory(isSelected ? null : cat.category)}
+                      data-testid={`filter-category-${cat.category}`}
+                    >
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-2">
                           <IconComponent className="h-4 w-4 text-muted-foreground" />
@@ -412,25 +509,51 @@ export default function BankAccountDetail() {
         )}
 
         {/* Transaction Tabs */}
-        <Tabs defaultValue="all" className="w-full">
-          <TabsList className="grid w-full grid-cols-3">
-            <TabsTrigger value="all" data-testid="tab-all">All ({account.transactions.length})</TabsTrigger>
-            <TabsTrigger value="income" data-testid="tab-income">Income ({incomeTransactions.length})</TabsTrigger>
-            <TabsTrigger value="outgoing" data-testid="tab-outgoing">Outgoing ({outgoingTransactions.length})</TabsTrigger>
-          </TabsList>
-          
-          <TabsContent value="all">
-            <TransactionTable transactions={account.transactions} currency={currency} />
-          </TabsContent>
-          
-          <TabsContent value="income">
-            <TransactionTable transactions={incomeTransactions} currency={currency} />
-          </TabsContent>
-          
-          <TabsContent value="outgoing">
-            <TransactionTable transactions={outgoingTransactions} currency={currency} />
-          </TabsContent>
-        </Tabs>
+        <div className="space-y-4">
+          {selectedCategory && (
+            <div className="flex items-center gap-2">
+              <Badge 
+                variant="secondary" 
+                className="gap-1"
+                data-testid="badge-active-filter"
+              >
+                Filtered: {selectedCategoryDisplay}
+              </Badge>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setSelectedCategory(null)}
+                data-testid="button-clear-filter"
+              >
+                Clear
+              </Button>
+            </div>
+          )}
+          <Tabs defaultValue="all" className="w-full">
+            <TabsList className="grid w-full grid-cols-4">
+              <TabsTrigger value="all" data-testid="tab-all">All ({filteredTransactions.length})</TabsTrigger>
+              <TabsTrigger value="income" data-testid="tab-income">Income ({incomeTransactions.length})</TabsTrigger>
+              <TabsTrigger value="outgoing" data-testid="tab-outgoing">Outgoing ({outgoingTransactions.length})</TabsTrigger>
+              <TabsTrigger value="monthly" data-testid="tab-monthly">Monthly</TabsTrigger>
+            </TabsList>
+            
+            <TabsContent value="all">
+              <TransactionTable transactions={filteredTransactions} currency={currency} />
+            </TabsContent>
+            
+            <TabsContent value="income">
+              <TransactionTable transactions={incomeTransactions} currency={currency} />
+            </TabsContent>
+            
+            <TabsContent value="outgoing">
+              <TransactionTable transactions={outgoingTransactions} currency={currency} />
+            </TabsContent>
+
+            <TabsContent value="monthly">
+              <MonthlyBreakdown transactions={filteredTransactions} currency={currency} />
+            </TabsContent>
+          </Tabs>
+        </div>
       </div>
     </div>
   );
@@ -501,6 +624,97 @@ function TransactionTable({ transactions, currency }: { transactions: EnrichedTr
           Showing 50 of {transactions.length} transactions
         </div>
       )}
+    </Card>
+  );
+}
+
+function MonthlyBreakdown({ transactions, currency }: { transactions: EnrichedTransactionDetail[]; currency: string }) {
+  const monthGroups = groupTransactionsByMonth(transactions);
+
+  if (monthGroups.length === 0) {
+    return (
+      <Card>
+        <CardContent className="py-8 text-center text-muted-foreground">
+          No transactions to display
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <Card data-testid="monthly-breakdown-card">
+      <Accordion type="multiple" className="w-full">
+        {monthGroups.map((month) => (
+          <AccordionItem key={month.monthKey} value={month.monthKey} data-testid={`month-item-${month.monthKey}`}>
+            <AccordionTrigger className="px-4 hover:no-underline" data-testid={`month-trigger-${month.monthKey}`}>
+              <div className="flex flex-1 items-center justify-between pr-4">
+                <div className="flex items-center gap-3">
+                  <span className="font-semibold" data-testid={`month-label-${month.monthKey}`}>{month.monthLabel}</span>
+                  <Badge variant="secondary" data-testid={`month-count-${month.monthKey}`}>
+                    {month.transactions.length} txns
+                  </Badge>
+                </div>
+                <div className="flex items-center gap-4">
+                  {month.totalIncomeCents > 0 && (
+                    <span className="text-sm font-mono font-medium text-green-600 dark:text-green-400" data-testid={`month-income-${month.monthKey}`}>
+                      +{formatCurrency(month.totalIncomeCents, currency)}
+                    </span>
+                  )}
+                  {month.totalOutgoingCents > 0 && (
+                    <span className="text-sm font-mono font-medium" data-testid={`month-outgoing-${month.monthKey}`}>
+                      -{formatCurrency(month.totalOutgoingCents, currency)}
+                    </span>
+                  )}
+                </div>
+              </div>
+            </AccordionTrigger>
+            <AccordionContent className="px-4">
+              <div className="space-y-4">
+                {month.categoryBreakdown.map((catGroup) => {
+                  const IconComponent = categoryIcons[catGroup.category] || HelpCircle;
+                  return (
+                    <div key={catGroup.category} className="space-y-2" data-testid={`monthly-category-${month.monthKey}-${catGroup.category}`}>
+                      <div className="flex items-center justify-between py-2 border-b">
+                        <div className="flex items-center gap-2">
+                          <IconComponent className="h-4 w-4 text-muted-foreground" />
+                          <span className="font-medium capitalize">{catGroup.category.replace(/_/g, " ")}</span>
+                          <span className="text-sm text-muted-foreground">({catGroup.transactions.length})</span>
+                        </div>
+                        <span className="font-mono font-semibold">{formatCurrency(catGroup.totalCents, currency)}</span>
+                      </div>
+                      <div className="pl-6 space-y-1">
+                        {catGroup.transactions.map((tx) => {
+                          const isIncoming = tx.entryType === "incoming";
+                          return (
+                            <div 
+                              key={tx.id} 
+                              className="flex items-center justify-between py-1.5 text-sm"
+                              data-testid={`monthly-tx-${tx.id}`}
+                            >
+                              <div className="flex items-center gap-2 min-w-0 flex-1">
+                                {tx.merchantLogoUrl && (
+                                  <img src={tx.merchantLogoUrl} alt="" className="h-5 w-5 rounded-full object-contain shrink-0" />
+                                )}
+                                <span className="truncate">{tx.merchantCleanName || tx.originalDescription}</span>
+                                <span className="text-muted-foreground shrink-0">
+                                  {tx.transactionDate ? format(new Date(tx.transactionDate), "MMM d") : "—"}
+                                </span>
+                              </div>
+                              <span className={`font-mono shrink-0 ml-2 ${isIncoming ? "text-green-600 dark:text-green-400" : ""}`}>
+                                {isIncoming ? "+" : "-"}{formatCurrency(Math.abs(tx.amountCents), currency)}
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </AccordionContent>
+          </AccordionItem>
+        ))}
+      </Accordion>
     </Card>
   );
 }

@@ -370,14 +370,48 @@ class EnrichmentService:
             }
         }
     
-    def _compute_budget_breakdown(self, enriched: List[NtropyOutputModel], analysis_months: int = 3) -> Dict[str, Any]:
-        """Compute budget breakdown from enriched transactions"""
+    def _compute_budget_breakdown(self, enriched: List[NtropyOutputModel], analysis_horizon_months: int = 3) -> Dict[str, Any]:
+        """
+        Compute budget breakdown from enriched transactions.
+        
+        Calculates monthly averages using only COMPLETE months from the data,
+        capped at the analysis horizon (default: 3 months).
+        Current (partial) month is excluded from the average calculation.
+        """
+        from datetime import datetime
+        
+        today = datetime.now()
+        first_of_current_month = datetime(today.year, today.month, 1)
+        
+        # Calculate the analysis window: 1st of (current - analysis_horizon_months) to end of last complete month
+        # Example: If today is Dec 13 and horizon is 3, window is Sept 1 - Nov 30
+        analysis_start_year = today.year
+        analysis_start_month = today.month - analysis_horizon_months
+        while analysis_start_month <= 0:
+            analysis_start_month += 12
+            analysis_start_year -= 1
+        analysis_start = datetime(analysis_start_year, analysis_start_month, 1)
+        
         income_total = 0
         fixed_total = 0
         discretionary_total = 0
         debt_total = 0
         
+        # Only count transactions within the analysis window (complete months only)
         for tx in enriched:
+            if not tx.transaction_date:
+                continue
+            
+            try:
+                tx_date = datetime.strptime(tx.transaction_date, "%Y-%m-%d")
+            except ValueError:
+                continue
+            
+            # Include only transactions from complete months within the analysis window
+            # Exclude current month (partial) and transactions before the analysis start
+            if tx_date < analysis_start or tx_date >= first_of_current_month:
+                continue
+            
             if tx.entry_type == "incoming":
                 income_total += tx.amount_cents
             elif tx.budget_category == "fixed":
@@ -387,8 +421,21 @@ class EnrichmentService:
             elif tx.budget_category == "debt":
                 debt_total += tx.amount_cents
         
-        # Monthly averages
-        months = max(1, analysis_months)
+        # Calculate actual complete months in the analysis window
+        # Count months from analysis_start to first_of_current_month
+        complete_months = 0
+        check_year, check_month = analysis_start_year, analysis_start_month
+        while datetime(check_year, check_month, 1) < first_of_current_month:
+            complete_months += 1
+            check_month += 1
+            if check_month > 12:
+                check_month = 1
+                check_year += 1
+        
+        # Cap at analysis horizon and ensure minimum of 1
+        months = min(complete_months, analysis_horizon_months)
+        months = max(1, months)
+        
         monthly_income = income_total // months
         monthly_fixed = fixed_total // months
         monthly_discretionary = discretionary_total // months
@@ -401,7 +448,8 @@ class EnrichmentService:
             "fixedCostsCents": monthly_fixed,
             "discretionaryCents": monthly_discretionary,
             "debtPaymentsCents": monthly_debt,
-            "safeToSpendCents": safe_to_spend
+            "safeToSpendCents": safe_to_spend,
+            "analysisMonths": months
         }
     
     def _extract_detected_debts(self, enriched: List[NtropyOutputModel]) -> List[Dict[str, Any]]:

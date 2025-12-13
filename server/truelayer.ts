@@ -212,17 +212,38 @@ export async function fetchAccountBalance(
   return response.json();
 }
 
+/**
+ * Calculate the dynamic date range for fetching transactions.
+ * Returns the 1st of the 4th month ago to today, giving us 3 complete months + current MTD.
+ * 
+ * Example for Dec 13th:
+ * - Dynamic from: Sept 1st
+ * - Dynamic to: Dec 13th
+ * - Gives: 3 complete months (Sept, Oct, Nov) + partial December as "MTD"
+ */
+export function calculateDynamicDateRange(): { from: string; to: string } {
+  const now = new Date();
+  
+  // Go back to 1st of 4th month ago (to get 3 complete months)
+  // Example: If today is Dec 13, we want Sept 1
+  const fromDate = new Date(now.getFullYear(), now.getMonth() - 3, 1);
+  
+  return {
+    from: fromDate.toISOString().split("T")[0],
+    to: now.toISOString().split("T")[0]
+  };
+}
+
 export async function fetchTransactions(
   accessToken: string,
   accountId: string,
   fromDate?: string,
   toDate?: string
 ): Promise<TrueLayerTransactionResponse> {
-  const now = new Date();
-  const defaultFrom = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000);
-
-  const from = fromDate || defaultFrom.toISOString().split("T")[0];
-  const to = toDate || now.toISOString().split("T")[0];
+  // Use dynamic date range by default (3 complete months + MTD)
+  const dynamicRange = calculateDynamicDateRange();
+  const from = fromDate || dynamicRange.from;
+  const to = toDate || dynamicRange.to;
 
   const response = await fetch(
     `${API_URL}/data/v1/accounts/${accountId}/transactions?from=${from}&to=${to}`,
@@ -244,15 +265,22 @@ export async function fetchTransactions(
 
 export async function fetchAllTransactions(
   accessToken: string,
-  days: number = 90
+  useDynamicRange: boolean = true
 ): Promise<TrueLayerTransactionResponse["results"]> {
   const accountsResponse = await fetchAccounts(accessToken);
   const allTransactions: TrueLayerTransactionResponse["results"] = [];
 
-  const now = new Date();
-  const fromDate = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
-  const from = fromDate.toISOString().split("T")[0];
-  const to = now.toISOString().split("T")[0];
+  // Use dynamic date range (3 complete months + MTD) or fallback to 90 days
+  const { from, to } = useDynamicRange 
+    ? calculateDynamicDateRange()
+    : (() => {
+        const now = new Date();
+        const fromDate = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000);
+        return {
+          from: fromDate.toISOString().split("T")[0],
+          to: now.toISOString().split("T")[0]
+        };
+      })();
 
   for (const account of accountsResponse.results) {
     try {
