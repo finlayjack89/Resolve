@@ -9,6 +9,7 @@ import { z } from "zod";
 import { fetchAllTransactions, fetchAllDirectDebits, refreshAccessToken, encryptToken } from "../truelayer";
 import { randomUUID } from "crypto";
 import { mapNtropyLabelsToCategory, UKBudgetCategory } from "../services/category-mapping";
+import { reconcileTransactions } from "../services/transaction-reconciliation";
 
 // Request validation schemas
 const saveBudgetSchema = z.object({
@@ -233,13 +234,18 @@ export function registerBudgetAnalysisRoutes(app: Express): void {
               await storage.saveEnrichedTransactions(transactionsToSave);
               console.log(`[Budget Analysis] Saved ${transactionsToSave.length} enriched transactions to database`);
               
-              // Step 3: Query ALL stored transactions for this item from DB
-              const allStoredTransactions = await storage.getEnrichedTransactionsByItemId(trueLayerItem.id);
-              console.log(`[Budget Analysis] Building summary from ${allStoredTransactions.length} stored transactions`);
+              // Step 3: Run reconciliation to detect transfers and refunds
+              const reconciliationResult = await reconcileTransactions(userId);
+              console.log(`[Budget Analysis] Reconciliation: ${reconciliationResult.transfersDetected} transfers, ${reconciliationResult.refundsDetected} refunds`);
               
-              // Step 4: Compute analysisSummary from queried data
-              const incomingTx = allStoredTransactions.filter((t) => t.entryType === "incoming");
-              const outgoingTx = allStoredTransactions.filter((t) => t.entryType === "outgoing");
+              // Step 4: Query ALL stored transactions for this item from DB, filtering excluded ones
+              const allStoredTransactions = await storage.getEnrichedTransactionsByItemId(trueLayerItem.id);
+              const analysisTransactions = allStoredTransactions.filter((t) => !t.excludeFromAnalysis);
+              console.log(`[Budget Analysis] Building summary from ${analysisTransactions.length} transactions (${allStoredTransactions.length - analysisTransactions.length} excluded)`);
+              
+              // Step 5: Compute analysisSummary from queried data
+              const incomingTx = analysisTransactions.filter((t) => t.entryType === "incoming");
+              const outgoingTx = analysisTransactions.filter((t) => t.entryType === "outgoing");
               
               const totalIncome = incomingTx.reduce((sum: number, t) => sum + t.amountCents, 0);
               const employmentIncome = incomingTx
@@ -283,7 +289,7 @@ export function registerBudgetAnalysisRoutes(app: Express): void {
                 lastUpdated: new Date().toISOString(),
               };
               
-              // Step 5: Update TrueLayer item with summary
+              // Step 6: Update TrueLayer item with summary
               await storage.updateTrueLayerItem(trueLayerItem.id, {
                 lastEnrichedAt: new Date(),
                 lastAnalyzedAt: new Date(),
@@ -621,11 +627,19 @@ export function registerBudgetAnalysisRoutes(app: Express): void {
         if (hasCachedData) {
           console.log(`[Budget Analysis] Using cached enriched transactions for user ${userId}`);
           
+          // Run reconciliation to detect transfers/refunds before using cached data
+          const reconciliationResult = await reconcileTransactions(userId);
+          console.log(`[Budget Analysis] Reconciliation on cached data: ${reconciliationResult.transfersDetected} transfers, ${reconciliationResult.refundsDetected} refunds`);
+          
+          // Re-fetch transactions after reconciliation (since it updates the database)
           const cachedTransactions = await storage.getEnrichedTransactionsByUserId(userId);
           
           if (cachedTransactions.length > 0) {
+            // Filter out excluded transactions (transfers, refunds, reversals)
+            const filteredTransactions = cachedTransactions.filter(tx => !tx.excludeFromAnalysis);
+            
             // Convert cached transactions to the format expected by the budget analysis
-            const enrichedTransactions = cachedTransactions.map(tx => ({
+            const enrichedTransactions = filteredTransactions.map(tx => ({
               transaction_id: tx.trueLayerTransactionId,
               merchant_clean_name: tx.merchantCleanName,
               merchant_logo_url: tx.merchantLogoUrl,
@@ -645,10 +659,11 @@ export function registerBudgetAnalysisRoutes(app: Express): void {
             const outgoingTx = enrichedTransactions.filter(t => t.entry_type === "outgoing");
             
             const totalIncomeCents = incomingTx.reduce((sum, t) => sum + t.amount_cents, 0);
-            const fixedCostsCents = outgoingTx.filter(t => t.budget_category === "fixed").reduce((sum, t) => sum + t.amount_cents, 0);
+            const fixedCostsCents = outgoingTx.filter(t => t.budget_category === "fixed_costs").reduce((sum, t) => sum + t.amount_cents, 0);
+            const essentialsCents = outgoingTx.filter(t => t.budget_category === "essentials").reduce((sum, t) => sum + t.amount_cents, 0);
             const debtPaymentsCents = outgoingTx.filter(t => t.budget_category === "debt").reduce((sum, t) => sum + t.amount_cents, 0);
             const discretionaryCents = outgoingTx.filter(t => t.budget_category === "discretionary").reduce((sum, t) => sum + t.amount_cents, 0);
-            const safeToSpendCents = totalIncomeCents - fixedCostsCents - debtPaymentsCents;
+            const safeToSpendCents = totalIncomeCents - fixedCostsCents - essentialsCents - debtPaymentsCents;
             
             // Build detected debts in the same format as the enrichment returns
             const detectedDebts = outgoingTx
@@ -669,7 +684,7 @@ export function registerBudgetAnalysisRoutes(app: Express): void {
                 analysis: {
                   averageMonthlyIncomeCents: totalIncomeCents,
                   fixedCostsCents: fixedCostsCents,
-                  variableEssentialsCents: 0,
+                  variableEssentialsCents: essentialsCents,
                   discretionaryCents: discretionaryCents,
                   safeToSpendCents: Math.max(0, safeToSpendCents),
                   breakdown: {},
@@ -886,13 +901,18 @@ export function registerBudgetAnalysisRoutes(app: Express): void {
                         await storage.saveEnrichedTransactions(transactionsToSave);
                         console.log(`[Enrichment Job ${jobId}] Saved ${transactionsToSave.length} enriched transactions to cache`);
                         
-                        // Step 3: Query ALL stored transactions for this item from DB
-                        const allStoredTransactions = await storage.getEnrichedTransactionsByItemId(trueLayerItem.id);
-                        console.log(`[Enrichment Job ${jobId}] Building summary from ${allStoredTransactions.length} stored transactions`);
+                        // Step 3: Run reconciliation to detect transfers and refunds
+                        const reconciliationResult = await reconcileTransactions(userId);
+                        console.log(`[Enrichment Job ${jobId}] Reconciliation: ${reconciliationResult.transfersDetected} transfers, ${reconciliationResult.refundsDetected} refunds`);
                         
-                        // Step 4: Compute analysisSummary from queried data
-                        const incomingTx = allStoredTransactions.filter((t) => t.entryType === "incoming");
-                        const outgoingTx = allStoredTransactions.filter((t) => t.entryType === "outgoing");
+                        // Step 4: Query ALL stored transactions for this item from DB, filtering excluded ones
+                        const allStoredTransactions = await storage.getEnrichedTransactionsByItemId(trueLayerItem.id);
+                        const analysisTransactions = allStoredTransactions.filter((t) => !t.excludeFromAnalysis);
+                        console.log(`[Enrichment Job ${jobId}] Building summary from ${analysisTransactions.length} transactions (${allStoredTransactions.length - analysisTransactions.length} excluded)`);
+                        
+                        // Step 5: Compute analysisSummary from queried data
+                        const incomingTx = analysisTransactions.filter((t) => t.entryType === "incoming");
+                        const outgoingTx = analysisTransactions.filter((t) => t.entryType === "outgoing");
                         
                         const analysisMonths = Math.max(1, Math.round(90 / 30)); // 3 months
                         
@@ -947,7 +967,7 @@ export function registerBudgetAnalysisRoutes(app: Express): void {
                           lastUpdated: new Date().toISOString(),
                         };
                         
-                        // Step 5: Update TrueLayer item with summary
+                        // Step 6: Update TrueLayer item with summary
                         await storage.updateTrueLayerItem(trueLayerItem.id, {
                           lastEnrichedAt: new Date(),
                           lastAnalyzedAt: new Date(),

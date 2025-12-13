@@ -81,6 +81,7 @@ export interface IStorage {
   deleteEnrichedTransactionsByUserId(userId: string): Promise<void>;
   deleteEnrichedTransactionsByItemId(trueLayerItemId: string): Promise<void>; // NEW: per-account
   cleanupOrphanedEnrichedTransactions(userId: string): Promise<number>; // NEW: cleanup orphans
+  updateEnrichedTransactionReconciliation(id: string, updates: { transactionType?: string; linkedTransactionId?: string | null; excludeFromAnalysis?: boolean }): Promise<void>; // Reconciliation updates
 }
 
 type BucketInput = Omit<InsertDebtBucket, 'accountId'>;
@@ -432,6 +433,22 @@ export class DatabaseStorage implements IStorage {
     }
     
     return orphanedIds.length;
+  }
+  
+  async updateEnrichedTransactionReconciliation(id: string, updates: { transactionType?: string; linkedTransactionId?: string | null; excludeFromAnalysis?: boolean }): Promise<void> {
+    const updateObj: any = {};
+    if (updates.transactionType !== undefined) {
+      updateObj.transactionType = updates.transactionType;
+    }
+    if (updates.linkedTransactionId !== undefined) {
+      updateObj.linkedTransactionId = updates.linkedTransactionId;
+    }
+    if (updates.excludeFromAnalysis !== undefined) {
+      updateObj.excludeFromAnalysis = updates.excludeFromAnalysis;
+    }
+    if (Object.keys(updateObj).length > 0) {
+      await db.update(enrichedTransactions).set(updateObj).where(eq(enrichedTransactions.id, id));
+    }
   }
 }
 
@@ -827,6 +844,10 @@ class GuestStorageWrapper implements IStorage {
   async cleanupOrphanedEnrichedTransactions(userId: string): Promise<number> {
     if (this.isGuest(userId)) return 0;
     return this.dbStorage.cleanupOrphanedEnrichedTransactions(userId);
+  }
+  
+  async updateEnrichedTransactionReconciliation(id: string, updates: { transactionType?: string; linkedTransactionId?: string | null; excludeFromAnalysis?: boolean }): Promise<void> {
+    return this.dbStorage.updateEnrichedTransactionReconciliation(id, updates);
   }
 }
 
