@@ -99,15 +99,28 @@ class EnrichmentService:
         self.api_key = api_key or os.environ.get("NTROPY_API_KEY")
         self.sdk = None
         
+        # Detailed initialization logging
+        print(f"[EnrichmentService] Initializing...")
+        print(f"[EnrichmentService] NTROPY_AVAILABLE: {NTROPY_AVAILABLE}")
+        print(f"[EnrichmentService] API key present: {bool(self.api_key)}")
+        print(f"[EnrichmentService] API key length: {len(self.api_key) if self.api_key else 0}")
+        
         if NTROPY_AVAILABLE and self.api_key and NtropySDK:
             try:
                 self.sdk = NtropySDK(self.api_key)
-                print("[EnrichmentService] Ntropy SDK initialized successfully")
+                print("[EnrichmentService] ✓ Ntropy SDK initialized successfully - LIVE enrichment enabled")
             except Exception as e:
-                print(f"[EnrichmentService] Failed to initialize Ntropy SDK: {e}")
+                print(f"[EnrichmentService] ✗ Failed to initialize Ntropy SDK: {e}")
                 self.sdk = None
         else:
-            print("[EnrichmentService] Running in fallback mode (no Ntropy enrichment)")
+            reasons = []
+            if not NTROPY_AVAILABLE:
+                reasons.append("ntropy-sdk module not installed")
+            if not self.api_key:
+                reasons.append("NTROPY_API_KEY not set")
+            if not NtropySDK:
+                reasons.append("SDK class not loaded")
+            print(f"[EnrichmentService] ⚠ Running in FALLBACK mode - reasons: {', '.join(reasons)}")
     
     def normalize_truelayer_transaction(self, raw_tx: Dict[str, Any]) -> TrueLayerIngestModel:
         """
@@ -162,7 +175,13 @@ class EnrichmentService:
         Returns True if account holder exists/was created, False otherwise.
         """
         if not self.sdk:
+            print(f"[EnrichmentService] ⚠ Cannot create account holder - SDK not initialized")
             return False
+        
+        print(f"[EnrichmentService] Creating/verifying account holder:")
+        print(f"  - ID: {hashed_user_id[:8]}...")
+        print(f"  - Name: {account_holder_name or '(not provided)'}")
+        print(f"  - Country: {country}")
         
         try:
             self.sdk.account_holders.create(
@@ -171,14 +190,15 @@ class EnrichmentService:
                 name=account_holder_name,
                 country=country
             )
-            print(f"[EnrichmentService] Created account holder: {hashed_user_id[:8]}... (country={country})")
+            print(f"[EnrichmentService] ✓ Created NEW account holder: {hashed_user_id[:8]}... (name={account_holder_name}, country={country})")
             return True
         except Exception as e:
             error_str = str(e).lower()
             if "already exists" in error_str or "409" in error_str:
-                print(f"[EnrichmentService] Account holder already exists: {hashed_user_id[:8]}...")
+                print(f"[EnrichmentService] ✓ Account holder already exists: {hashed_user_id[:8]}...")
                 return True
-            print(f"[EnrichmentService] Failed to create account holder: {e}")
+            print(f"[EnrichmentService] ✗ Failed to create account holder: {e}")
+            print(f"[EnrichmentService] Error details: {type(e).__name__}: {str(e)}")
             return False
     
     def _determine_entry_type(self, norm_tx: TrueLayerIngestModel) -> str:
@@ -220,9 +240,14 @@ class EnrichmentService:
                 date=tx_data["date"],
                 account_holder_id=tx_data["account_holder_id"],
             )
-            return enriched.model_dump() if hasattr(enriched, 'model_dump') else None
+            result = enriched.model_dump() if hasattr(enriched, 'model_dump') else None
+            if result:
+                merchant_name = result.get('merchant', {}).get('name', 'Unknown') if result.get('merchant') else 'Unknown'
+                labels = result.get('labels', [])
+                print(f"[EnrichmentService] ✓ Enriched: {tx_data['description'][:30]}... → {merchant_name} [{', '.join(labels[:3])}]")
+            return result
         except Exception as e:
-            print(f"[EnrichmentService] Error enriching {tx_data['id']}: {e}")
+            print(f"[EnrichmentService] ✗ Error enriching {tx_data['id']}: {e}")
             return None
     
     async def _enrich_concurrent(

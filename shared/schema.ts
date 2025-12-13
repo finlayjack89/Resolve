@@ -223,6 +223,10 @@ export const enrichedTransactions = pgTable("enriched_transactions", {
   ukCategory: text("uk_category"), // UK-specific category mapping (employment, utilities, subscriptions, etc.)
   transactionDate: date("transaction_date").notNull(),
   currency: text("currency").default("GBP"),
+  // Reconciliation fields for transfer/refund detection
+  transactionType: text("transaction_type").default("regular"), // 'regular', 'transfer', 'refund', 'reversal'
+  linkedTransactionId: varchar("linked_transaction_id"), // Links refund to original expense, or transfer to counterpart
+  excludeFromAnalysis: boolean("exclude_from_analysis").default(false), // True for transfers/reversals that shouldn't count
   createdAt: timestamp("created_at").defaultNow(),
 }, (table) => ({
   userTransactionUnique: unique().on(table.userId, table.trueLayerTransactionId),
