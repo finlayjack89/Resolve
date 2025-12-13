@@ -271,9 +271,34 @@ class EnrichmentService:
         
         normalized = [self.normalize_truelayer_transaction(tx) for tx in raw_transactions]
         
-        # Ensure account holder exists before enrichment
+        # Ensure account holder exists before enrichment - only abort if SDK is available but call fails
         hashed_user_id = self._hash_user_id(user_id)
-        self._create_or_get_account_holder(hashed_user_id, account_holder_name, country)
+        
+        # Only attempt account holder creation if SDK is available
+        if self.sdk and NTROPY_AVAILABLE:
+            account_holder_created = self._create_or_get_account_holder(hashed_user_id, account_holder_name, country)
+            
+            if not account_holder_created:
+                print(f"[EnrichmentService] CRITICAL: Account holder creation failed for user {user_id[:8]}... - aborting Ntropy enrichment and using fallback")
+                # Fall back to classification-only mode without Ntropy
+                yield {"type": "progress", "current": 0, "total": total, "status": "classifying", "startTime": int(start_time * 1000)}
+                results = self._fallback_classification(normalized)
+                
+                yield {"type": "progress", "current": total, "total": total, "status": "classifying", "startTime": int(start_time * 1000)}
+                
+                budget_analysis = self._compute_budget_breakdown(results)
+                detected_debts = self._extract_detected_debts(results)
+                
+                yield {
+                    "type": "complete",
+                    "result": {
+                        "enriched_transactions": [r.model_dump() for r in results],
+                        "budget_analysis": budget_analysis,
+                        "detected_debts": detected_debts,
+                        "warning": "Ntropy account holder creation failed - using fallback classification"
+                    }
+                }
+                return
         
         # Phase 2: Enrich with Ntropy
         results: List[NtropyOutputModel] = []
@@ -537,12 +562,17 @@ class EnrichmentService:
             for tx in raw_transactions
         ]
         
-        # Ensure account holder exists before enrichment
+        # Ensure account holder exists before enrichment - only abort if SDK is available but call fails
         hashed_user_id = self._hash_user_id(user_id)
-        self._create_or_get_account_holder(hashed_user_id, account_holder_name, country)
         
         # Phase 2: Enrich with Ntropy (if available)
         if self.sdk and NTROPY_AVAILABLE:
+            # Create account holder before enrichment - abort if this fails
+            account_holder_created = self._create_or_get_account_holder(hashed_user_id, account_holder_name, country)
+            
+            if not account_holder_created:
+                print(f"[EnrichmentService] CRITICAL: Account holder creation failed for user {user_id[:8]}... - using fallback classification")
+                return self._fallback_classification(normalized)
             try:
                 # Prepare transaction data for concurrent processing
                 tx_data_list = []

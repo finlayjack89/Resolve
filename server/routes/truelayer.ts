@@ -295,10 +295,7 @@ export function registerTrueLayerRoutes(app: Express) {
         });
       }
 
-      // Delete enriched transactions for this account first
-      await storage.deleteEnrichedTransactionsByItemId(accountId);
-      
-      // Delete the TrueLayer item
+      // Delete the TrueLayer item (transactions are now cascade-deleted in storage layer)
       await storage.deleteTrueLayerItemById(accountId);
       
       res.json({ 

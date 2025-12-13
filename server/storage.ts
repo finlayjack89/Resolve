@@ -80,6 +80,7 @@ export interface IStorage {
   saveEnrichedTransactions(transactions: InsertEnrichedTransaction[]): Promise<void>;
   deleteEnrichedTransactionsByUserId(userId: string): Promise<void>;
   deleteEnrichedTransactionsByItemId(trueLayerItemId: string): Promise<void>; // NEW: per-account
+  cleanupOrphanedEnrichedTransactions(userId: string): Promise<number>; // NEW: cleanup orphans
 }
 
 type BucketInput = Omit<InsertDebtBucket, 'accountId'>;
@@ -312,10 +313,16 @@ export class DatabaseStorage implements IStorage {
 
   async deleteTrueLayerItem(userId: string): Promise<void> {
     // Legacy: deletes all items for user
+    // First delete all enriched transactions for this user to prevent orphans
+    await this.deleteEnrichedTransactionsByUserId(userId);
+    // Then delete all TrueLayer items
     await db.delete(trueLayerItems).where(eq(trueLayerItems.userId, userId));
   }
   
   async deleteTrueLayerItemById(id: string): Promise<void> {
+    // First delete enriched transactions for this specific account to prevent orphans
+    await this.deleteEnrichedTransactionsByItemId(id);
+    // Then delete the TrueLayer item
     await db.delete(trueLayerItems).where(eq(trueLayerItems.id, id));
   }
   
@@ -398,6 +405,33 @@ export class DatabaseStorage implements IStorage {
   
   async deleteEnrichedTransactionsByItemId(trueLayerItemId: string): Promise<void> {
     await db.delete(enrichedTransactions).where(eq(enrichedTransactions.trueLayerItemId, trueLayerItemId));
+  }
+  
+  async cleanupOrphanedEnrichedTransactions(userId: string): Promise<number> {
+    // Find all valid TrueLayer item IDs for this user
+    const validItems = await this.getTrueLayerItemsByUserId(userId);
+    const validItemIds = new Set(validItems.map(item => item.id));
+    
+    // Get all enriched transactions for this user
+    const allTransactions = await this.getEnrichedTransactionsByUserId(userId);
+    
+    // Find orphaned transactions (no trueLayerItemId or invalid trueLayerItemId)
+    const orphanedIds: string[] = [];
+    for (const tx of allTransactions) {
+      if (!tx.trueLayerItemId || !validItemIds.has(tx.trueLayerItemId)) {
+        orphanedIds.push(tx.id);
+      }
+    }
+    
+    // Delete orphaned transactions
+    if (orphanedIds.length > 0) {
+      for (const id of orphanedIds) {
+        await db.delete(enrichedTransactions).where(eq(enrichedTransactions.id, id));
+      }
+      console.log(`[Storage] Cleaned up ${orphanedIds.length} orphaned enriched transactions for user ${userId.substring(0, 8)}...`);
+    }
+    
+    return orphanedIds.length;
   }
 }
 
@@ -788,6 +822,11 @@ class GuestStorageWrapper implements IStorage {
   
   async deleteEnrichedTransactionsByItemId(trueLayerItemId: string): Promise<void> {
     return this.dbStorage.deleteEnrichedTransactionsByItemId(trueLayerItemId);
+  }
+  
+  async cleanupOrphanedEnrichedTransactions(userId: string): Promise<number> {
+    if (this.isGuest(userId)) return 0;
+    return this.dbStorage.cleanupOrphanedEnrichedTransactions(userId);
   }
 }
 
