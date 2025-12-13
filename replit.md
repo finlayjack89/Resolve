@@ -54,6 +54,20 @@ Preferred communication style: Simple, everyday language.
   - Monthly budget recalibration with next recalibration date tracking
   - Month-safe date arithmetic for end-of-month edge cases
   - Fallback to deterministic categorization if Ntropy is unavailable
+- **Ntropy Enrichment Fixes (Dec 2024)**:
+  - User schema updated: `name` column split into `firstName` and `lastName`
+  - Account holder creation: calls `sdk.account_holders.create()` before enrichment
+  - Budget analyzer math fixed: now caps at 3 complete months, excludes current partial month
+  - Dynamic date range: `calculateDynamicDateRange()` fetches from 1st of 4th month ago
+- **Monthly Breakdown UI**: Bank account detail page (`/current-finances/:id`) now includes:
+  - "Monthly" tab with accordion showing expandable month rows
+  - Current month labeled as "(MTD)" - Month to Date
+  - Category breakdown with transaction counts and totals when expanded
+  - Transactions grouped by category within each month
+- **Category Filtering**: Clickable category rows in the "Spending by Category" section:
+  - Click any category to filter all transaction views to that category
+  - Filter badge shows active category with clear button
+  - All tabs (All, Income, Outgoing, Monthly) respect the filter
 
 ### Backend
 - **Technology Stack**: Express.js with TypeScript, Drizzle ORM, Passport.js (local strategy), session-based authentication. Python backend (FastAPI) for the optimization engine.
@@ -72,7 +86,7 @@ Preferred communication style: Simple, everyday language.
 - **Purpose**: Enables users to securely connect their UK bank accounts to fetch transaction history for budget analysis.
 - **OAuth2 Flow**: User initiates connection via `/api/truelayer/auth-url`, completes authentication on TrueLayer, callback at `/api/truelayer/callback` exchanges code for tokens.
 - **Token Management**: Access and refresh tokens encrypted with AES-256-GCM before storage. Automatic token refresh when consent expires.
-- **Data Fetching**: Fetches transactions (90 days) and direct debits via TrueLayer Data API for deterministic budget categorization.
+- **Data Fetching**: Fetches transactions using dynamic date range (3 complete months + current MTD) via TrueLayer Data API. The `calculateDynamicDateRange()` function in `server/truelayer.ts` calculates from 1st of 4th month ago to today.
 - **Budget Engine**: `server/services/budget-engine.ts` categorizes transactions into income, fixed costs, variable essentials, and discretionary spending using TrueLayer's `transaction_classification` field.
 - **Environment Variables**: `TRUELAYER_CLIENT_ID`, `TRUELAYER_CLIENT_SECRET` stored as secrets. `TRUELAYER_REDIRECT_URI` auto-configured from Replit domain.
 - **Live Mode**: Now using TrueLayer production environment (`USE_TRUELAYER_SANDBOX=false`). Users can connect real UK bank accounts (Barclays, HSBC, Lloyds, NatWest, etc.).
