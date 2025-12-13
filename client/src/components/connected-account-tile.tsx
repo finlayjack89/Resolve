@@ -2,7 +2,7 @@ import { Link } from "wouter";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { RefreshCw, CheckCircle2, AlertCircle, Clock, Briefcase, ChevronRight } from "lucide-react";
+import { RefreshCw, CheckCircle2, AlertCircle, Clock, Briefcase, ChevronRight, Trash2, Loader2 } from "lucide-react";
 import { formatCurrency } from "@/lib/format";
 import { formatDistanceToNow } from "date-fns";
 
@@ -42,9 +42,11 @@ interface ConnectedAccountTileProps {
   currency: string;
   isRefreshing?: boolean;
   onRefresh?: () => void;
+  onRemove?: () => void;
+  isRemoving?: boolean;
 }
 
-export function ConnectedAccountTile({ account, currency, isRefreshing, onRefresh }: ConnectedAccountTileProps) {
+export function ConnectedAccountTile({ account, currency, isRefreshing, onRefresh, onRemove, isRemoving }: ConnectedAccountTileProps) {
   const isConnected = account.connectionStatus === "connected" || account.connectionStatus === "active";
   const hasAnalysis = !!account.analysisSummary;
   
@@ -146,23 +148,45 @@ export function ConnectedAccountTile({ account, currency, isRefreshing, onRefres
       </CardContent>
       </Link>
         
-        {onRefresh && (
-          <div className="px-6 pb-6">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                onRefresh();
-              }}
-              disabled={isRefreshing}
-              className="w-full"
-              data-testid={`button-refresh-${account.id}`}
-            >
-              <RefreshCw className={`mr-2 h-4 w-4 ${isRefreshing ? "animate-spin" : ""}`} />
-              {isRefreshing ? "Analyzing..." : "Re-analyze"}
-            </Button>
+        {(onRefresh || onRemove) && (
+          <div className="px-6 pb-6 flex gap-2">
+            {onRefresh && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onRefresh();
+                }}
+                disabled={isRefreshing || isRemoving}
+                className="flex-1"
+                data-testid={`button-refresh-${account.id}`}
+              >
+                <RefreshCw className={`mr-2 h-4 w-4 ${isRefreshing ? "animate-spin" : ""}`} />
+                {isRefreshing ? "Syncing..." : "Re-analyze"}
+              </Button>
+            )}
+            {onRemove && (
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onRemove();
+                }}
+                disabled={isRefreshing || isRemoving}
+                className="text-destructive hover:text-destructive hover:bg-destructive/10"
+                data-testid={`button-remove-${account.id}`}
+              >
+                {isRemoving ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Trash2 className="h-4 w-4" />
+                )}
+              </Button>
+            )}
           </div>
         )}
     </Card>

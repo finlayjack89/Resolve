@@ -69,6 +69,7 @@ export default function CurrentFinances() {
   const [, setLocation] = useLocation();
   const searchString = useSearch();
   const [refreshingAccountId, setRefreshingAccountId] = useState<string | null>(null);
+  const [removingAccountId, setRemovingAccountId] = useState<string | null>(null);
   const [isConnecting, setIsConnecting] = useState(false);
   const [showEnrichmentModal, setShowEnrichmentModal] = useState(false);
   const [enrichmentJobId, setEnrichmentJobId] = useState<string | null>(null);
@@ -175,6 +176,31 @@ export default function CurrentFinances() {
       } catch (e) {
         // Ignore cancel errors
       }
+    }
+  };
+
+  const handleRemoveAccount = async (accountId: string, institutionName: string) => {
+    if (!confirm(`Are you sure you want to remove ${institutionName}? This will delete all transaction data and analysis for this account.`)) {
+      return;
+    }
+
+    setRemovingAccountId(accountId);
+    try {
+      await apiRequest("DELETE", `/api/truelayer/item/${accountId}`);
+      queryClient.invalidateQueries({ queryKey: ["/api/current-finances/combined"] });
+      toast({
+        title: "Account Removed",
+        description: `${institutionName} has been disconnected and all data removed.`,
+      });
+    } catch (error: any) {
+      console.error("Remove account error:", error);
+      toast({
+        title: "Removal Failed",
+        description: error.message || "Could not remove the account.",
+        variant: "destructive",
+      });
+    } finally {
+      setRemovingAccountId(null);
     }
   };
 
@@ -381,7 +407,27 @@ export default function CurrentFinances() {
           <>
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-xl font-semibold">Connected Accounts</h2>
-              <span className="text-sm text-muted-foreground" data-testid="text-account-count">{accounts.length} account{accounts.length !== 1 ? "s" : ""}</span>
+              <div className="flex items-center gap-4">
+                <span className="text-sm text-muted-foreground" data-testid="text-account-count">{accounts.length} account{accounts.length !== 1 ? "s" : ""}</span>
+                <Button
+                  onClick={handleConnectBank}
+                  disabled={isConnecting}
+                  variant="outline"
+                  data-testid="button-add-another-bank"
+                >
+                  {isConnecting ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      Connecting...
+                    </>
+                  ) : (
+                    <>
+                      <Building2 className="mr-2 h-4 w-4" />
+                      Add Another Bank
+                    </>
+                  )}
+                </Button>
+              </div>
             </div>
             <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
               {accounts.map((account) => (
@@ -391,6 +437,8 @@ export default function CurrentFinances() {
                   currency={currency}
                   isRefreshing={refreshingAccountId === account.id}
                   onRefresh={() => analyzeMutation.mutate(account.id)}
+                  onRemove={() => handleRemoveAccount(account.id, account.institutionName)}
+                  isRemoving={removingAccountId === account.id}
                 />
               ))}
             </div>

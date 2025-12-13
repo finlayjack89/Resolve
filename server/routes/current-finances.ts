@@ -23,6 +23,7 @@ import {
   isDiscretionaryCategory,
   isDebtPaymentCategory,
 } from "../services/category-mapping";
+import { triggerAccountSync, isAccountSyncing } from "../services/background-sync";
 
 // Response types for the Current Finances API
 export interface ConnectedAccountSummary {
@@ -157,6 +158,39 @@ function buildCategoryBreakdown(transactions: EnrichedTransaction[]): CategoryBr
   }
 
   return breakdown.sort((a, b) => b.totalCents - a.totalCents);
+}
+
+/**
+ * Recalculates and updates user budget from all connected accounts
+ * Called when accounts are added/removed or re-analyzed
+ */
+async function recalculateUserBudgetFromAccounts(userId: string): Promise<void> {
+  const items = await storage.getTrueLayerItemsByUserId(userId);
+  
+  let totalAvailableForDebt = 0;
+  let totalDiscretionary = 0;
+  
+  for (const item of items) {
+    const summary = item.analysisSummary;
+    if (!summary) continue;
+    
+    totalAvailableForDebt += summary.availableForDebtCents;
+    totalDiscretionary += summary.discretionaryCents;
+  }
+  
+  // Current budget = what they have available after all expenses
+  const currentBudgetCents = totalAvailableForDebt;
+  
+  // Potential budget = available + 50% of discretionary (what they could save)
+  const potentialBudgetCents = totalAvailableForDebt + Math.round(totalDiscretionary * 0.5);
+  
+  // Update user with calculated budget values
+  await storage.updateUser(userId, {
+    currentBudgetCents,
+    potentialBudgetCents,
+  });
+  
+  console.log(`[Budget Recalc] User ${userId}: current=${currentBudgetCents}, potential=${potentialBudgetCents}`);
 }
 
 function aggregateAnalysisSummaries(
@@ -330,7 +364,8 @@ export function registerCurrentFinancesRoutes(app: Express): void {
 
   /**
    * POST /api/current-finances/account/:id/analyze
-   * Triggers re-analysis of transactions for a specific account
+   * Triggers full refresh pipeline: sync fresh transactions from TrueLayer,
+   * re-enrich via Ntropy, and recalculate the analysis
    */
   app.post("/api/current-finances/account/:id/analyze", requireAuth, async (req, res) => {
     try {
@@ -347,86 +382,47 @@ export function registerCurrentFinancesRoutes(app: Express): void {
         return res.status(403).json({ message: "Access denied" });
       }
 
-      // Fetch enriched transactions for this account
-      const transactions = await storage.getEnrichedTransactionsByItemId(accountId);
-      
-      // Build analysis summary from enriched transactions
-      let employmentIncome = 0;
-      let otherIncome = 0;
-      let fixedCosts = 0;
-      let essentials = 0;
-      let discretionary = 0;
-      let debtPayments = 0;
-
-      const breakdown: AccountAnalysisSummary["breakdown"] = {
-        income: [],
-        fixedCosts: [],
-        essentials: [],
-        discretionary: [],
-        debtPayments: [],
-      };
-
-      for (const tx of transactions) {
-        const ukCategory = (tx.ukCategory || UKBudgetCategory.OTHER) as UKBudgetCategory;
-        const amountCents = Math.abs(tx.amountCents);
-        const isIncoming = tx.entryType === "incoming";
-        
-        const item = {
-          description: tx.merchantCleanName || tx.originalDescription,
-          amountCents,
-          category: ukCategory,
-        };
-
-        if (isIncoming) {
-          if (ukCategory === UKBudgetCategory.EMPLOYMENT) {
-            employmentIncome += amountCents;
-            breakdown.income.push(item);
-          } else {
-            otherIncome += amountCents;
-            breakdown.income.push(item);
-          }
-        } else {
-          if (isFixedCostCategory(ukCategory)) {
-            fixedCosts += amountCents;
-            breakdown.fixedCosts.push(item);
-          } else if (isEssentialCategory(ukCategory)) {
-            essentials += amountCents;
-            breakdown.essentials.push(item);
-          } else if (isDebtPaymentCategory(ukCategory)) {
-            debtPayments += amountCents;
-            breakdown.debtPayments.push(item);
-          } else {
-            discretionary += amountCents;
-            breakdown.discretionary.push(item);
-          }
-        }
+      // Check if this account is already syncing
+      if (isAccountSyncing(accountId)) {
+        return res.status(409).json({ 
+          message: "Account is already syncing. Please wait and try again.",
+          syncing: true 
+        });
       }
 
-      const totalIncome = employmentIncome + otherIncome;
-      const availableForDebt = Math.max(0, totalIncome - fixedCosts - essentials - debtPayments);
+      console.log(`[Current Finances] Starting full refresh pipeline for account ${accountId}`);
 
-      const analysisSummary: AccountAnalysisSummary = {
-        averageMonthlyIncomeCents: totalIncome,
-        employmentIncomeCents: employmentIncome,
-        otherIncomeCents: otherIncome,
-        sideHustleIncomeCents: 0, // Will be calculated at combined level based on isSideHustle flag
-        fixedCostsCents: fixedCosts,
-        essentialsCents: essentials,
-        discretionaryCents: discretionary,
-        debtPaymentsCents: debtPayments,
-        availableForDebtCents: availableForDebt,
-        breakdown,
-        analysisMonths: 1, // TODO: Calculate based on transaction date range
-        lastUpdated: new Date().toISOString(),
-      };
+      // Step 1: Sync fresh transactions from TrueLayer and enrich via Ntropy
+      // triggerAccountSync handles:
+      // - Fetching transactions from TrueLayer
+      // - Enriching via Ntropy (or fallback categorization)
+      // - Saving enriched transactions
+      // - Running budget recalibration (computes and saves analysisSummary)
+      const syncSuccess = await triggerAccountSync(accountId);
+      
+      if (!syncSuccess) {
+        console.error(`[Current Finances] Sync failed for account ${accountId}`);
+        return res.status(500).json({ 
+          message: "Failed to sync transactions from bank. Please check connection status." 
+        });
+      }
 
-      // Update the TrueLayer item with the analysis summary
-      await storage.updateTrueLayerItem(accountId, {
+      console.log(`[Current Finances] Sync completed for account ${accountId}`);
+
+      // Step 2: Recalculate overall user budget from all accounts
+      await recalculateUserBudgetFromAccounts(userId);
+
+      // Step 3: Fetch the updated item to return the latest analysis summary
+      const updatedItem = await storage.getTrueLayerItemById(accountId);
+      const analysisSummary = updatedItem?.analysisSummary || null;
+
+      console.log(`[Current Finances] Full refresh pipeline completed for account ${accountId}`);
+
+      res.json({ 
+        success: true, 
         analysisSummary,
-        lastAnalyzedAt: new Date(),
+        message: "Transactions synced, enriched, and analyzed successfully."
       });
-
-      res.json({ success: true, analysisSummary });
     } catch (error: any) {
       console.error("[Current Finances] Error analyzing account:", error);
       res.status(500).json({ message: "Failed to analyze account" });
@@ -463,6 +459,43 @@ export function registerCurrentFinancesRoutes(app: Express): void {
     } catch (error: any) {
       console.error("[Current Finances] Error fetching refresh status:", error);
       res.status(500).json({ message: "Failed to fetch refresh status" });
+    }
+  });
+
+  /**
+   * DELETE /api/truelayer/item/:id
+   * Removes a connected bank account and all its transaction data
+   */
+  app.delete("/api/truelayer/item/:id", requireAuth, async (req, res) => {
+    try {
+      const userId = (req.user as any).id;
+      const itemId = req.params.id;
+      
+      const item = await storage.getTrueLayerItemById(itemId);
+      
+      if (!item) {
+        return res.status(404).json({ message: "Account not found" });
+      }
+      
+      if (item.userId !== userId) {
+        return res.status(403).json({ message: "Access denied" });
+      }
+
+      // Delete all enriched transactions for this account first (cascades in DB but explicit is safer)
+      await storage.deleteEnrichedTransactionsByItemId(itemId);
+      
+      // Delete the TrueLayer item itself
+      await storage.deleteTrueLayerItemById(itemId);
+      
+      // Recalculate user budget from remaining accounts
+      await recalculateUserBudgetFromAccounts(userId);
+      
+      console.log(`[Current Finances] Removed account ${itemId} for user ${userId}`);
+      
+      res.json({ success: true, message: "Account removed successfully" });
+    } catch (error: any) {
+      console.error("[Current Finances] Error removing account:", error);
+      res.status(500).json({ message: "Failed to remove account" });
     }
   });
 
