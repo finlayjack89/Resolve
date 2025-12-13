@@ -166,6 +166,8 @@ class EnrichmentRequest(schemas.BaseModel):
     transactions: List[Dict[str, Any]]
     user_id: str
     analysis_months: int = 3
+    account_holder_name: Optional[str] = None
+    country: str = "GB"
 
 class EnrichmentResponse(schemas.BaseModel):
     """Response from transaction enrichment"""
@@ -193,7 +195,9 @@ async def enrich_transactions(request: EnrichmentRequest):
         result = await enrich_and_analyze_budget(
             raw_transactions=request.transactions,
             user_id=request.user_id,
-            analysis_months=request.analysis_months
+            analysis_months=request.analysis_months,
+            account_holder_name=request.account_holder_name,
+            country=request.country
         )
         
         print(f"[Enrichment] Successfully enriched transactions. Found {len(result['detected_debts'])} potential debts.")
@@ -217,6 +221,8 @@ class StreamingEnrichmentRequest(schemas.BaseModel):
     transactions: List[Dict[str, Any]]
     user_id: str
     analysis_months: int = 3
+    account_holder_name: Optional[str] = None
+    country: str = "GB"
 
 
 @app.post("/enrich-transactions-stream")
@@ -237,7 +243,9 @@ async def enrich_transactions_streaming(request: StreamingEnrichmentRequest):
         try:
             async for event in service.enrich_transactions_streaming(
                 raw_transactions=request.transactions,
-                user_id=request.user_id
+                user_id=request.user_id,
+                account_holder_name=request.account_holder_name,
+                country=request.country
             ):
                 yield f"data: {json.dumps(event)}\n\n"
         except Exception as e:

@@ -334,6 +334,13 @@ async function syncAccount(item: TrueLayerItem): Promise<void> {
       // Try to enrich with Ntropy, fallback to deterministic categorization
       let enrichedData: any[] = [];
       
+      // Get user for account holder name and country
+      const user = await storage.getUser(item.userId);
+      const accountHolderName = user?.firstName && user?.lastName 
+        ? `${user.firstName} ${user.lastName}` 
+        : null;
+      const userCountry = user?.country || "GB";
+      
       try {
         const enrichmentResponse = await fetch("http://localhost:8000/enrich-transactions", {
           method: "POST",
@@ -351,6 +358,8 @@ async function syncAccount(item: TrueLayerItem): Promise<void> {
             })),
             user_id: item.userId,
             analysis_months: 3,
+            account_holder_name: accountHolderName,
+            country: userCountry,
           }),
         });
 

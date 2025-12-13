@@ -124,6 +124,13 @@ export function registerBudgetAnalysisRoutes(app: Express): void {
       
       const analysisMonths = Math.max(1, Math.round(days / 30));
       
+      // Get user for account holder name and country
+      const user = await storage.getUser(userId);
+      const accountHolderName = user?.firstName && user?.lastName 
+        ? `${user.firstName} ${user.lastName}` 
+        : null;
+      const userCountry = user?.country || "GB";
+      
       // Try Ntropy enrichment first, fall back to basic analysis
       let analysis;
       let enrichedTransactions = null;
@@ -147,6 +154,8 @@ export function registerBudgetAnalysisRoutes(app: Express): void {
             })),
             user_id: userId,
             analysis_months: analysisMonths,
+            account_holder_name: accountHolderName,
+            country: userCountry,
           }),
         });
         
@@ -753,6 +762,13 @@ export function registerBudgetAnalysisRoutes(app: Express): void {
           
           console.log(`[Enrichment Job ${jobId}] Fetched ${transactions.length} transactions`);
           
+          // Get user for account holder name and country
+          const streamUser = await storage.getUser(userId);
+          const streamAccountHolderName = streamUser?.firstName && streamUser?.lastName 
+            ? `${streamUser.firstName} ${streamUser.lastName}` 
+            : null;
+          const streamUserCountry = streamUser?.country || "GB";
+          
           // Stream enrichment through Python
           const streamResponse = await fetch("http://localhost:8000/enrich-transactions-stream", {
             method: "POST",
@@ -770,6 +786,8 @@ export function registerBudgetAnalysisRoutes(app: Express): void {
               })),
               user_id: userId,
               analysis_months: Math.max(1, Math.round(days / 30)),
+              account_holder_name: streamAccountHolderName,
+              country: streamUserCountry,
             }),
           });
           

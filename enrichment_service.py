@@ -149,6 +149,38 @@ class EnrichmentService:
         """Create a hashed account holder ID for Ntropy recurrence detection"""
         return hashlib.sha256(user_id.encode()).hexdigest()[:32]
     
+    def _create_or_get_account_holder(
+        self,
+        hashed_user_id: str,
+        account_holder_name: Optional[str] = None,
+        country: str = "GB"
+    ) -> bool:
+        """
+        Ensure account holder exists in Ntropy before enrichment.
+        Creates if doesn't exist, ignores if already exists.
+        
+        Returns True if account holder exists/was created, False otherwise.
+        """
+        if not self.sdk:
+            return False
+        
+        try:
+            self.sdk.account_holders.create(
+                id=hashed_user_id,
+                type="consumer",
+                name=account_holder_name,
+                country=country
+            )
+            print(f"[EnrichmentService] Created account holder: {hashed_user_id[:8]}... (country={country})")
+            return True
+        except Exception as e:
+            error_str = str(e).lower()
+            if "already exists" in error_str or "409" in error_str:
+                print(f"[EnrichmentService] Account holder already exists: {hashed_user_id[:8]}...")
+                return True
+            print(f"[EnrichmentService] Failed to create account holder: {e}")
+            return False
+    
     def _determine_entry_type(self, norm_tx: TrueLayerIngestModel) -> str:
         """
         Determine if a transaction is incoming (income) or outgoing (expense).
@@ -212,6 +244,8 @@ class EnrichmentService:
         self,
         raw_transactions: List[Dict[str, Any]],
         user_id: str,
+        account_holder_name: Optional[str] = None,
+        country: str = "GB",
         progress_callback: Optional[Callable[[int, int, str], None]] = None
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
@@ -221,6 +255,8 @@ class EnrichmentService:
         Args:
             raw_transactions: List of raw TrueLayer transaction dicts
             user_id: User ID for recurrence detection
+            account_holder_name: Optional name for Ntropy account holder
+            country: Country code for account holder (default: GB)
             progress_callback: Optional callback(current, total, status)
             
         Yields:
@@ -234,6 +270,10 @@ class EnrichmentService:
         yield {"type": "progress", "current": 0, "total": total, "status": "extracting", "startTime": int(start_time * 1000)}
         
         normalized = [self.normalize_truelayer_transaction(tx) for tx in raw_transactions]
+        
+        # Ensure account holder exists before enrichment
+        hashed_user_id = self._hash_user_id(user_id)
+        self._create_or_get_account_holder(hashed_user_id, account_holder_name, country)
         
         # Phase 2: Enrich with Ntropy
         results: List[NtropyOutputModel] = []
@@ -425,7 +465,9 @@ class EnrichmentService:
     async def enrich_transactions(
         self,
         raw_transactions: List[Dict[str, Any]],
-        user_id: str
+        user_id: str,
+        account_holder_name: Optional[str] = None,
+        country: str = "GB"
     ) -> List[NtropyOutputModel]:
         """
         Main enrichment pipeline: ingest → normalize → enrich → classify
@@ -433,6 +475,8 @@ class EnrichmentService:
         Args:
             raw_transactions: List of raw TrueLayer transaction dicts
             user_id: User ID for recurrence detection
+            account_holder_name: Optional name for Ntropy account holder
+            country: Country code for account holder (default: GB)
             
         Returns:
             List of enriched and classified transactions
@@ -444,6 +488,10 @@ class EnrichmentService:
             self.normalize_truelayer_transaction(tx)
             for tx in raw_transactions
         ]
+        
+        # Ensure account holder exists before enrichment
+        hashed_user_id = self._hash_user_id(user_id)
+        self._create_or_get_account_holder(hashed_user_id, account_holder_name, country)
         
         # Phase 2: Enrich with Ntropy (if available)
         if self.sdk and NTROPY_AVAILABLE:
@@ -637,7 +685,9 @@ class EnrichmentService:
 async def enrich_and_analyze_budget(
     raw_transactions: List[Dict[str, Any]],
     user_id: str,
-    analysis_months: int = 3
+    analysis_months: int = 3,
+    account_holder_name: Optional[str] = None,
+    country: str = "GB"
 ) -> Dict[str, Any]:
     """
     High-level function to enrich transactions and compute budget breakdown
@@ -651,7 +701,12 @@ async def enrich_and_analyze_budget(
     service = EnrichmentService()
     
     # Enrich all transactions
-    enriched = await service.enrich_transactions(raw_transactions, user_id)
+    enriched = await service.enrich_transactions(
+        raw_transactions, 
+        user_id,
+        account_holder_name=account_holder_name,
+        country=country
+    )
     
     # Compute budget breakdown
     total_income_cents = 0
