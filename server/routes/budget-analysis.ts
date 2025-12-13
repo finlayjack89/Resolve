@@ -4,10 +4,11 @@ import { storage } from "../storage";
 import { decryptToken } from "../encryption";
 import { analyzeBudget, analyzePersona } from "../services/budget-engine";
 import { getPersonaById, PERSONAS } from "../mock-data/truelayer-personas";
-import { budgetAnalyzeRequestSchema } from "@shared/schema";
+import { budgetAnalyzeRequestSchema, type AccountAnalysisSummary } from "@shared/schema";
 import { z } from "zod";
 import { fetchAllTransactions, fetchAllDirectDebits, refreshAccessToken, encryptToken } from "../truelayer";
 import { randomUUID } from "crypto";
+import { mapNtropyLabelsToCategory, UKBudgetCategory } from "../services/category-mapping";
 
 // Request validation schemas
 const saveBudgetSchema = z.object({
@@ -178,6 +179,112 @@ export function registerBudgetAnalysisRoutes(app: Express): void {
           
           enrichedTransactions = enrichmentData.enriched_transactions;
           detectedDebts = enrichmentData.detected_debts;
+          
+          // Save enriched transactions to database (idempotent: delete first, then insert)
+          if (enrichedTransactions && Array.isArray(enrichedTransactions)) {
+            try {
+              // Step 1: Delete existing transactions for this item to prevent duplicates
+              await storage.deleteEnrichedTransactionsByItemId(trueLayerItem.id);
+              console.log(`[Budget Analysis] Cleared existing enriched transactions for item ${trueLayerItem.id}`);
+              
+              const originalTxMap = new Map(transactions.map((t: any) => [t.transaction_id, t]));
+              
+              const transactionsToSave = enrichedTransactions.map((tx: any) => {
+                const originalTx = originalTxMap.get(tx.transaction_id);
+                const categoryMapping = mapNtropyLabelsToCategory(
+                  tx.labels || [],
+                  tx.merchant_clean_name,
+                  originalTx?.description,
+                  tx.entry_type === "incoming"
+                );
+                
+                return {
+                  userId,
+                  trueLayerItemId: trueLayerItem.id,
+                  trueLayerTransactionId: tx.transaction_id,
+                  ntropyTransactionId: tx.ntropy_transaction_id || null,
+                  originalDescription: tx.original_description || originalTx?.description || "",
+                  merchantCleanName: tx.merchant_clean_name || null,
+                  merchantLogoUrl: tx.merchant_logo_url || null,
+                  merchantWebsiteUrl: tx.merchant_website_url || null,
+                  labels: tx.labels || [],
+                  isRecurring: tx.is_recurring || false,
+                  recurrenceFrequency: tx.recurrence_frequency || null,
+                  recurrenceDay: tx.recurrence_day || null,
+                  amountCents: tx.amount_cents,
+                  entryType: tx.entry_type,
+                  budgetCategory: categoryMapping.budgetGroup,
+                  ukCategory: categoryMapping.ukCategory,
+                  transactionDate: tx.transaction_date,
+                  currency: tx.currency || "GBP",
+                };
+              });
+              
+              // Step 2: Insert new enriched transactions
+              await storage.saveEnrichedTransactions(transactionsToSave);
+              console.log(`[Budget Analysis] Saved ${transactionsToSave.length} enriched transactions to database`);
+              
+              // Step 3: Query ALL stored transactions for this item from DB
+              const allStoredTransactions = await storage.getEnrichedTransactionsByItemId(trueLayerItem.id);
+              console.log(`[Budget Analysis] Building summary from ${allStoredTransactions.length} stored transactions`);
+              
+              // Step 4: Compute analysisSummary from queried data
+              const incomingTx = allStoredTransactions.filter((t) => t.entryType === "incoming");
+              const outgoingTx = allStoredTransactions.filter((t) => t.entryType === "outgoing");
+              
+              const totalIncome = incomingTx.reduce((sum: number, t) => sum + t.amountCents, 0);
+              const employmentIncome = incomingTx
+                .filter((t) => t.ukCategory === UKBudgetCategory.EMPLOYMENT)
+                .reduce((sum: number, t) => sum + t.amountCents, 0);
+              const sideHustleIncome = incomingTx
+                .filter((t) => t.ukCategory === UKBudgetCategory.SIDE_HUSTLE)
+                .reduce((sum: number, t) => sum + t.amountCents, 0);
+              
+              const fixedCosts = outgoingTx
+                .filter((t) => t.budgetCategory === "fixed_costs")
+                .reduce((sum: number, t) => sum + t.amountCents, 0);
+              const essentials = outgoingTx
+                .filter((t) => t.budgetCategory === "essentials")
+                .reduce((sum: number, t) => sum + t.amountCents, 0);
+              const discretionary = outgoingTx
+                .filter((t) => t.budgetCategory === "discretionary")
+                .reduce((sum: number, t) => sum + t.amountCents, 0);
+              const debtPayments = outgoingTx
+                .filter((t) => t.budgetCategory === "debt")
+                .reduce((sum: number, t) => sum + t.amountCents, 0);
+              
+              const avgIncome = Math.round(totalIncome / analysisMonths);
+              const avgFixed = Math.round(fixedCosts / analysisMonths);
+              const avgEssentials = Math.round(essentials / analysisMonths);
+              const avgDiscretionary = Math.round(discretionary / analysisMonths);
+              const avgDebt = Math.round(debtPayments / analysisMonths);
+              
+              const analysisSummary: AccountAnalysisSummary = {
+                averageMonthlyIncomeCents: avgIncome,
+                employmentIncomeCents: Math.round(employmentIncome / analysisMonths),
+                sideHustleIncomeCents: Math.round(sideHustleIncome / analysisMonths),
+                otherIncomeCents: Math.round((totalIncome - employmentIncome - sideHustleIncome) / analysisMonths),
+                fixedCostsCents: avgFixed,
+                essentialsCents: avgEssentials,
+                discretionaryCents: avgDiscretionary,
+                debtPaymentsCents: avgDebt,
+                availableForDebtCents: Math.max(0, avgIncome - avgFixed - avgEssentials - avgDebt),
+                breakdown: { income: [], fixedCosts: [], essentials: [], discretionary: [], debtPayments: [] },
+                analysisMonths,
+                lastUpdated: new Date().toISOString(),
+              };
+              
+              // Step 5: Update TrueLayer item with summary
+              await storage.updateTrueLayerItem(trueLayerItem.id, {
+                lastEnrichedAt: new Date(),
+                lastAnalyzedAt: new Date(),
+                analysisSummary,
+              });
+              console.log(`[Budget Analysis] Updated TrueLayer item with analysis summary`);
+            } catch (saveError) {
+              console.error("[Budget Analysis] Failed to save enriched transactions:", saveError);
+            }
+          }
         } else {
           console.log("[Budget Analysis] Ntropy enrichment unavailable, using fallback analysis");
           throw new Error("Enrichment service returned non-OK status");
@@ -715,30 +822,121 @@ export function registerBudgetAnalysisRoutes(app: Express): void {
                       isEnriched: true,
                     };
                     
-                    // Save enriched transactions to cache for future use
+                    // Save enriched transactions to cache (idempotent: delete first, then insert)
                     if (event.result.enriched_transactions && Array.isArray(event.result.enriched_transactions)) {
                       try {
-                        const transactionsToSave = event.result.enriched_transactions.map((tx: any) => ({
-                          userId,
-                          trueLayerTransactionId: tx.transaction_id,
-                          ntropyTransactionId: tx.ntropy_transaction_id || null,
-                          originalDescription: tx.original_description || tx.description || "",
-                          merchantCleanName: tx.merchant_clean_name || null,
-                          merchantLogoUrl: tx.merchant_logo_url || null,
-                          merchantWebsiteUrl: tx.merchant_website_url || null,
-                          labels: tx.labels || [],
-                          isRecurring: tx.is_recurring || false,
-                          recurrenceFrequency: tx.recurrence_frequency || null,
-                          recurrenceDay: tx.recurrence_day || null,
-                          amountCents: tx.amount_cents,
-                          entryType: tx.entry_type,
-                          budgetCategory: tx.budget_category || null,
-                          transactionDate: tx.transaction_date,
-                          currency: tx.currency || "GBP",
-                        }));
+                        // Step 1: Delete existing transactions for this item to prevent duplicates
+                        await storage.deleteEnrichedTransactionsByItemId(trueLayerItem.id);
+                        console.log(`[Enrichment Job ${jobId}] Cleared existing enriched transactions for item ${trueLayerItem.id}`);
                         
+                        // Find the original transaction descriptions for UK category mapping
+                        const originalTxMap = new Map(transactions.map((t: any) => [t.transaction_id, t]));
+                        
+                        const transactionsToSave = event.result.enriched_transactions.map((tx: any) => {
+                          const originalTx = originalTxMap.get(tx.transaction_id);
+                          // Map Ntropy labels to UK budget categories
+                          const categoryMapping = mapNtropyLabelsToCategory(
+                            tx.labels || [],
+                            tx.merchant_clean_name,
+                            originalTx?.description,
+                            tx.entry_type === "incoming"
+                          );
+                          
+                          return {
+                            userId,
+                            trueLayerItemId: trueLayerItem.id, // Link to specific bank account
+                            trueLayerTransactionId: tx.transaction_id,
+                            ntropyTransactionId: tx.ntropy_transaction_id || null,
+                            originalDescription: tx.original_description || originalTx?.description || "",
+                            merchantCleanName: tx.merchant_clean_name || null,
+                            merchantLogoUrl: tx.merchant_logo_url || null,
+                            merchantWebsiteUrl: tx.merchant_website_url || null,
+                            labels: tx.labels || [],
+                            isRecurring: tx.is_recurring || false,
+                            recurrenceFrequency: tx.recurrence_frequency || null,
+                            recurrenceDay: tx.recurrence_day || null,
+                            amountCents: tx.amount_cents,
+                            entryType: tx.entry_type,
+                            budgetCategory: categoryMapping.budgetGroup,
+                            ukCategory: categoryMapping.ukCategory,
+                            transactionDate: tx.transaction_date,
+                            currency: tx.currency || "GBP",
+                          };
+                        });
+                        
+                        // Step 2: Insert new enriched transactions
                         await storage.saveEnrichedTransactions(transactionsToSave);
                         console.log(`[Enrichment Job ${jobId}] Saved ${transactionsToSave.length} enriched transactions to cache`);
+                        
+                        // Step 3: Query ALL stored transactions for this item from DB
+                        const allStoredTransactions = await storage.getEnrichedTransactionsByItemId(trueLayerItem.id);
+                        console.log(`[Enrichment Job ${jobId}] Building summary from ${allStoredTransactions.length} stored transactions`);
+                        
+                        // Step 4: Compute analysisSummary from queried data
+                        const incomingTx = allStoredTransactions.filter((t) => t.entryType === "incoming");
+                        const outgoingTx = allStoredTransactions.filter((t) => t.entryType === "outgoing");
+                        
+                        const analysisMonths = Math.max(1, Math.round(90 / 30)); // 3 months
+                        
+                        // Calculate totals by budget group
+                        const totalIncome = incomingTx.reduce((sum: number, t) => sum + t.amountCents, 0);
+                        const employmentIncome = incomingTx
+                          .filter((t) => t.ukCategory === UKBudgetCategory.EMPLOYMENT)
+                          .reduce((sum: number, t) => sum + t.amountCents, 0);
+                        const sideHustleIncome = incomingTx
+                          .filter((t) => t.ukCategory === UKBudgetCategory.SIDE_HUSTLE)
+                          .reduce((sum: number, t) => sum + t.amountCents, 0);
+                        const otherIncome = totalIncome - employmentIncome - sideHustleIncome;
+                        
+                        const fixedCosts = outgoingTx
+                          .filter((t) => t.budgetCategory === "fixed_costs")
+                          .reduce((sum: number, t) => sum + t.amountCents, 0);
+                        const essentials = outgoingTx
+                          .filter((t) => t.budgetCategory === "essentials")
+                          .reduce((sum: number, t) => sum + t.amountCents, 0);
+                        const discretionary = outgoingTx
+                          .filter((t) => t.budgetCategory === "discretionary")
+                          .reduce((sum: number, t) => sum + t.amountCents, 0);
+                        const debtPayments = outgoingTx
+                          .filter((t) => t.budgetCategory === "debt")
+                          .reduce((sum: number, t) => sum + t.amountCents, 0);
+                        
+                        // Monthly averages
+                        const avgIncome = Math.round(totalIncome / analysisMonths);
+                        const avgFixed = Math.round(fixedCosts / analysisMonths);
+                        const avgEssentials = Math.round(essentials / analysisMonths);
+                        const avgDiscretionary = Math.round(discretionary / analysisMonths);
+                        const avgDebt = Math.round(debtPayments / analysisMonths);
+                        
+                        const analysisSummary: AccountAnalysisSummary = {
+                          averageMonthlyIncomeCents: avgIncome,
+                          employmentIncomeCents: Math.round(employmentIncome / analysisMonths),
+                          sideHustleIncomeCents: Math.round(sideHustleIncome / analysisMonths),
+                          otherIncomeCents: Math.round(otherIncome / analysisMonths),
+                          fixedCostsCents: avgFixed,
+                          essentialsCents: avgEssentials,
+                          discretionaryCents: avgDiscretionary,
+                          debtPaymentsCents: avgDebt,
+                          availableForDebtCents: Math.max(0, avgIncome - avgFixed - avgEssentials - avgDebt),
+                          breakdown: {
+                            income: [],
+                            fixedCosts: [],
+                            essentials: [],
+                            discretionary: [],
+                            debtPayments: [],
+                          },
+                          analysisMonths,
+                          lastUpdated: new Date().toISOString(),
+                        };
+                        
+                        // Step 5: Update TrueLayer item with summary
+                        await storage.updateTrueLayerItem(trueLayerItem.id, {
+                          lastEnrichedAt: new Date(),
+                          lastAnalyzedAt: new Date(),
+                          analysisSummary,
+                        });
+                        console.log(`[Enrichment Job ${jobId}] Updated TrueLayer item with analysis summary`);
+                        
                       } catch (saveError) {
                         console.error(`[Enrichment Job ${jobId}] Failed to save enriched transactions:`, saveError);
                         // Don't fail the job, just log the error
