@@ -187,7 +187,9 @@ export default function CurrentFinances() {
     setRemovingAccountId(accountId);
     try {
       await apiRequest("DELETE", `/api/truelayer/item/${accountId}`);
+      // Invalidate both the combined query and the specific account query to clear stale cache
       queryClient.invalidateQueries({ queryKey: ["/api/current-finances/combined"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/current-finances/account", accountId] });
       toast({
         title: "Account Removed",
         description: `${institutionName} has been disconnected and all data removed.`,
