@@ -65,7 +65,8 @@ export const users = pgTable("users", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   email: text("email").notNull().unique(),
   password: text("password").notNull(),
-  name: text("name"),
+  firstName: text("first_name"),
+  lastName: text("last_name"),
   country: text("country"),
   region: text("region"),
   currency: text("currency").default("USD"),
@@ -380,14 +381,16 @@ export const insertUserSchema = createInsertSchema(users, {
 }).pick({
   email: true,
   password: true,
-  name: true,
+  firstName: true,
+  lastName: true,
   country: true,
   region: true,
   currency: true,
 });
 
 export const updateUserProfileSchema = z.object({
-  name: z.string().optional(),
+  firstName: z.string().optional(),
+  lastName: z.string().optional(),
   country: z.string().optional(),
   region: z.string().optional(),
   currency: z.string().optional(),

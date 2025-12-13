@@ -13,7 +13,8 @@ export default function Signup() {
   const [, setLocation] = useLocation();
   const { signup } = useAuth();
   const { toast } = useToast();
-  const [name, setName] = useState("");
+  const [firstName, setFirstName] = useState("");
+  const [lastName, setLastName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -43,7 +44,7 @@ export default function Signup() {
     setIsLoading(true);
 
     try {
-      await signup(email, password, name);
+      await signup(email, password, firstName, lastName);
       setLocation("/onboarding");
     } catch (error) {
       toast({
@@ -72,21 +73,39 @@ export default function Signup() {
         </CardHeader>
         <form onSubmit={handleSubmit}>
           <CardContent className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="name" className="text-sm font-medium">
-                Full Name
-              </Label>
-              <Input
-                id="name"
-                type="text"
-                placeholder="John Doe"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                required
-                disabled={isLoading}
-                data-testid="input-name"
-                className="h-12"
-              />
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="firstName" className="text-sm font-medium">
+                  First Name
+                </Label>
+                <Input
+                  id="firstName"
+                  type="text"
+                  placeholder="John"
+                  value={firstName}
+                  onChange={(e) => setFirstName(e.target.value)}
+                  required
+                  disabled={isLoading}
+                  data-testid="input-first-name"
+                  className="h-12"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="lastName" className="text-sm font-medium">
+                  Last Name
+                </Label>
+                <Input
+                  id="lastName"
+                  type="text"
+                  placeholder="Doe"
+                  value={lastName}
+                  onChange={(e) => setLastName(e.target.value)}
+                  required
+                  disabled={isLoading}
+                  data-testid="input-last-name"
+                  className="h-12"
+                />
+              </div>
             </div>
             <div className="space-y-2">
               <Label htmlFor="email" className="text-sm font-medium">

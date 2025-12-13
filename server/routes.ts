@@ -200,7 +200,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
     const guestUser = {
       id: "guest-user",
       email: "guest@example.com",
-      name: "Guest User",
+      firstName: "Guest",
+      lastName: "User",
       country: null,
       region: null,
       currency: null,
