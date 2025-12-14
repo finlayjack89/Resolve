@@ -169,37 +169,17 @@ class EnrichmentService:
         country: str = "GB"
     ) -> bool:
         """
-        Ensure account holder exists in Ntropy before enrichment.
-        Creates if doesn't exist, ignores if already exists.
+        DEPRECATED: Account holders are now created implicitly with transactions.
         
-        Returns True if account holder exists/was created, False otherwise.
+        As of Ntropy SDK updates, account holders are created automatically when
+        the first transaction is enriched with account_holder_id, account_holder_type,
+        and optionally account_holder_name. This method is kept for backward 
+        compatibility but is now a no-op.
+        
+        Returns True always (no separate account holder creation needed).
         """
-        if not self.sdk:
-            print(f"[EnrichmentService] ⚠ Cannot create account holder - SDK not initialized")
-            return False
-        
-        print(f"[EnrichmentService] Creating/verifying account holder:")
-        print(f"  - ID: {hashed_user_id[:8]}...")
-        print(f"  - Name: {account_holder_name or '(not provided)'}")
-        print(f"  - Country: {country}")
-        
-        try:
-            self.sdk.account_holders.create(
-                id=hashed_user_id,
-                type="consumer",
-                name=account_holder_name,
-                country=country
-            )
-            print(f"[EnrichmentService] ✓ Created NEW account holder: {hashed_user_id[:8]}... (name={account_holder_name}, country={country})")
-            return True
-        except Exception as e:
-            error_str = str(e).lower()
-            if "already exists" in error_str or "409" in error_str:
-                print(f"[EnrichmentService] ✓ Account holder already exists: {hashed_user_id[:8]}...")
-                return True
-            print(f"[EnrichmentService] ✗ Failed to create account holder: {e}")
-            print(f"[EnrichmentService] Error details: {type(e).__name__}: {str(e)}")
-            return False
+        print(f"[EnrichmentService] Note: Account holder {hashed_user_id[:8]}... will be created implicitly with first transaction")
+        return True
     
     def _determine_entry_type(self, norm_tx: TrueLayerIngestModel) -> str:
         """
@@ -231,15 +211,25 @@ class EnrichmentService:
     def _enrich_single_sync(self, tx_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Synchronous single transaction enrichment for thread pool"""
         try:
-            enriched = self.sdk.transactions.create(
-                id=tx_data["id"],
-                description=tx_data["description"],
-                amount=tx_data["amount"],
-                entry_type=tx_data["entry_type"],
-                currency=tx_data["currency"],
-                date=tx_data["date"],
-                account_holder_id=tx_data["account_holder_id"],
-            )
+            # Build the transaction create call with all parameters
+            # Account holder is created implicitly when first transaction is enriched
+            create_kwargs = {
+                "id": tx_data["id"],
+                "description": tx_data["description"],
+                "amount": tx_data["amount"],
+                "entry_type": tx_data["entry_type"],
+                "currency": tx_data["currency"],
+                "date": tx_data["date"],
+                "account_holder_id": tx_data["account_holder_id"],
+                "account_holder_type": "consumer",
+                "location": {"country": tx_data.get("country", "GB")},
+            }
+            
+            # Add account holder name if provided (improves enrichment quality)
+            if tx_data.get("account_holder_name"):
+                create_kwargs["account_holder_name"] = tx_data["account_holder_name"]
+            
+            enriched = self.sdk.transactions.create(**create_kwargs)
             result = enriched.model_dump() if hasattr(enriched, 'model_dump') else None
             if result:
                 merchant_name = result.get('merchant', {}).get('name', 'Unknown') if result.get('merchant') else 'Unknown'
@@ -248,6 +238,8 @@ class EnrichmentService:
             return result
         except Exception as e:
             print(f"[EnrichmentService] ✗ Error enriching {tx_data['id']}: {e}")
+            import traceback
+            traceback.print_exc()
             return None
     
     async def _enrich_concurrent(
@@ -296,34 +288,14 @@ class EnrichmentService:
         
         normalized = [self.normalize_truelayer_transaction(tx) for tx in raw_transactions]
         
-        # Ensure account holder exists before enrichment - only abort if SDK is available but call fails
+        # Hash user ID for Ntropy account holder (created implicitly with first transaction)
         hashed_user_id = self._hash_user_id(user_id)
         
-        # Only attempt account holder creation if SDK is available
-        if self.sdk and NTROPY_AVAILABLE:
-            account_holder_created = self._create_or_get_account_holder(hashed_user_id, account_holder_name, country)
-            
-            if not account_holder_created:
-                print(f"[EnrichmentService] CRITICAL: Account holder creation failed for user {user_id[:8]}... - aborting Ntropy enrichment and using fallback")
-                # Fall back to classification-only mode without Ntropy
-                yield {"type": "progress", "current": 0, "total": total, "status": "classifying", "startTime": int(start_time * 1000)}
-                results = self._fallback_classification(normalized)
-                
-                yield {"type": "progress", "current": total, "total": total, "status": "classifying", "startTime": int(start_time * 1000)}
-                
-                budget_analysis = self._compute_budget_breakdown(results)
-                detected_debts = self._extract_detected_debts(results)
-                
-                yield {
-                    "type": "complete",
-                    "result": {
-                        "enriched_transactions": [r.model_dump() for r in results],
-                        "budget_analysis": budget_analysis,
-                        "detected_debts": detected_debts,
-                        "warning": "Ntropy account holder creation failed - using fallback classification"
-                    }
-                }
-                return
+        print(f"[EnrichmentService] Account holder context:")
+        print(f"  - Hashed ID: {hashed_user_id[:8]}...")
+        print(f"  - Name: {account_holder_name or '(not provided)'}")
+        print(f"  - Country: {country}")
+        print(f"  - Note: Account holder will be created implicitly with first transaction")
         
         # Phase 2: Enrich with Ntropy
         results: List[NtropyOutputModel] = []
@@ -339,7 +311,7 @@ class EnrichmentService:
                 batch_end = min(batch_start + batch_size, total)
                 batch = normalized[batch_start:batch_end]
                 
-                # Prepare batch data
+                # Prepare batch data with all enrichment context
                 tx_data_list = []
                 for norm_tx in batch:
                     entry_type = self._determine_entry_type(norm_tx)
@@ -350,7 +322,9 @@ class EnrichmentService:
                         "entry_type": entry_type,
                         "currency": norm_tx.currency,
                         "date": norm_tx.timestamp,
-                        "account_holder_id": self._hash_user_id(user_id),
+                        "account_holder_id": hashed_user_id,
+                        "account_holder_name": account_holder_name,
+                        "country": country,
                     })
                 
                 # Enrich batch concurrently
@@ -587,19 +561,14 @@ class EnrichmentService:
             for tx in raw_transactions
         ]
         
-        # Ensure account holder exists before enrichment - only abort if SDK is available but call fails
+        # Hash user ID for account holder (created implicitly with first transaction)
         hashed_user_id = self._hash_user_id(user_id)
         
         # Phase 2: Enrich with Ntropy (if available)
         if self.sdk and NTROPY_AVAILABLE:
-            # Create account holder before enrichment - abort if this fails
-            account_holder_created = self._create_or_get_account_holder(hashed_user_id, account_holder_name, country)
-            
-            if not account_holder_created:
-                print(f"[EnrichmentService] CRITICAL: Account holder creation failed for user {user_id[:8]}... - using fallback classification")
-                return self._fallback_classification(normalized)
             try:
                 # Prepare transaction data for concurrent processing
+                # Account holder is created implicitly with first transaction
                 tx_data_list = []
                 for norm_tx in normalized:
                     entry_type = self._determine_entry_type(norm_tx)
@@ -610,7 +579,9 @@ class EnrichmentService:
                         "entry_type": entry_type,
                         "currency": norm_tx.currency,
                         "date": norm_tx.timestamp,
-                        "account_holder_id": self._hash_user_id(user_id),
+                        "account_holder_id": hashed_user_id,
+                        "account_holder_name": account_holder_name,
+                        "country": country,
                     })
                 
                 print(f"[EnrichmentService] Enriching {len(tx_data_list)} transactions with Ntropy (concurrent)...")
