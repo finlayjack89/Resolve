@@ -158,9 +158,18 @@ class EnrichmentService:
             timestamp=date_str
         )
     
-    def _hash_user_id(self, user_id: str) -> str:
-        """Create a hashed account holder ID for Ntropy recurrence detection"""
-        return hashlib.sha256(user_id.encode()).hexdigest()[:32]
+    def _hash_account_holder_id(self, user_id: str, truelayer_item_id: str) -> str:
+        """
+        Create a unique hashed account holder ID for Ntropy recurrence detection.
+        
+        By combining user_id + truelayer_item_id, we ensure complete data isolation
+        when bank accounts are removed and re-added. Each bank connection gets a 
+        unique Ntropy account holder, preventing data carryover.
+        """
+        combined = f"{user_id}:{truelayer_item_id}"
+        hashed_id = hashlib.sha256(combined.encode()).hexdigest()[:32]
+        print(f"[EnrichmentService] Generated unique account_holder_id: {hashed_id[:16]}... (user: {user_id[:8]}..., item: {truelayer_item_id[:8]}...)")
+        return hashed_id
     
     def _create_or_get_account_holder(
         self,
@@ -271,6 +280,7 @@ class EnrichmentService:
         self,
         raw_transactions: List[Dict[str, Any]],
         user_id: str,
+        truelayer_item_id: str,
         account_holder_name: Optional[str] = None,
         country: str = "GB",
         progress_callback: Optional[Callable[[int, int, str], None]] = None
@@ -282,6 +292,7 @@ class EnrichmentService:
         Args:
             raw_transactions: List of raw TrueLayer transaction dicts
             user_id: User ID for recurrence detection
+            truelayer_item_id: TrueLayer item ID for unique account holder isolation
             account_holder_name: Optional name for Ntropy account holder
             country: Country code for account holder (default: GB)
             progress_callback: Optional callback(current, total, status)
@@ -298,11 +309,11 @@ class EnrichmentService:
         
         normalized = [self.normalize_truelayer_transaction(tx) for tx in raw_transactions]
         
-        # Hash user ID for Ntropy account holder (created implicitly with first transaction)
-        hashed_user_id = self._hash_user_id(user_id)
+        # Hash user ID + truelayer_item_id for unique Ntropy account holder isolation
+        hashed_account_holder_id = self._hash_account_holder_id(user_id, truelayer_item_id)
         
         print(f"[EnrichmentService] Account holder context:")
-        print(f"  - Hashed ID: {hashed_user_id[:8]}...")
+        print(f"  - Hashed ID: {hashed_account_holder_id[:8]}...")
         print(f"  - Name: {account_holder_name or '(not provided)'}")
         print(f"  - Country: {country}")
         print(f"  - Note: Account holder will be created implicitly with first transaction")
@@ -332,7 +343,7 @@ class EnrichmentService:
                         "entry_type": entry_type,
                         "currency": norm_tx.currency,
                         "date": norm_tx.timestamp,
-                        "account_holder_id": hashed_user_id,
+                        "account_holder_id": hashed_account_holder_id,
                         "account_holder_name": account_holder_name,
                         "country": country,
                     })
@@ -548,6 +559,7 @@ class EnrichmentService:
         self,
         raw_transactions: List[Dict[str, Any]],
         user_id: str,
+        truelayer_item_id: str,
         account_holder_name: Optional[str] = None,
         country: str = "GB"
     ) -> List[NtropyOutputModel]:
@@ -557,6 +569,7 @@ class EnrichmentService:
         Args:
             raw_transactions: List of raw TrueLayer transaction dicts
             user_id: User ID for recurrence detection
+            truelayer_item_id: TrueLayer item ID for unique account holder isolation
             account_holder_name: Optional name for Ntropy account holder
             country: Country code for account holder (default: GB)
             
@@ -571,8 +584,8 @@ class EnrichmentService:
             for tx in raw_transactions
         ]
         
-        # Hash user ID for account holder (created implicitly with first transaction)
-        hashed_user_id = self._hash_user_id(user_id)
+        # Hash user ID + truelayer_item_id for unique Ntropy account holder isolation
+        hashed_account_holder_id = self._hash_account_holder_id(user_id, truelayer_item_id)
         
         # Phase 2: Enrich with Ntropy (if available)
         if self.sdk and NTROPY_AVAILABLE:
@@ -589,7 +602,7 @@ class EnrichmentService:
                         "entry_type": entry_type,
                         "currency": norm_tx.currency,
                         "date": norm_tx.timestamp,
-                        "account_holder_id": hashed_user_id,
+                        "account_holder_id": hashed_account_holder_id,
                         "account_holder_name": account_holder_name,
                         "country": country,
                     })
@@ -769,12 +782,21 @@ class EnrichmentService:
 async def enrich_and_analyze_budget(
     raw_transactions: List[Dict[str, Any]],
     user_id: str,
+    truelayer_item_id: str,
     analysis_months: int = 3,
     account_holder_name: Optional[str] = None,
     country: str = "GB"
 ) -> Dict[str, Any]:
     """
     High-level function to enrich transactions and compute budget breakdown
+    
+    Args:
+        raw_transactions: List of raw TrueLayer transaction dicts
+        user_id: User ID for recurrence detection
+        truelayer_item_id: TrueLayer item ID for unique account holder isolation
+        analysis_months: Number of months to analyze
+        account_holder_name: Optional name for Ntropy account holder
+        country: Country code for account holder (default: GB)
     
     Returns:
         Dict containing:
@@ -788,6 +810,7 @@ async def enrich_and_analyze_budget(
     enriched = await service.enrich_transactions(
         raw_transactions, 
         user_id,
+        truelayer_item_id=truelayer_item_id,
         account_holder_name=account_holder_name,
         country=country
     )

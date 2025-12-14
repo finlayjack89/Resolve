@@ -368,6 +368,7 @@ async function syncAccount(item: TrueLayerItem): Promise<void> {
               timestamp: t.timestamp,
             })),
             user_id: item.userId,
+            truelayer_item_id: accountId,
             analysis_months: 3,
             account_holder_name: accountHolderName,
             country: userCountry,

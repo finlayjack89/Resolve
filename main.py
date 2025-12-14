@@ -165,6 +165,7 @@ class EnrichmentRequest(schemas.BaseModel):
     """Request for transaction enrichment"""
     transactions: List[Dict[str, Any]]
     user_id: str
+    truelayer_item_id: str
     analysis_months: int = 3
     account_holder_name: Optional[str] = None
     country: str = "GB"
@@ -195,6 +196,7 @@ async def enrich_transactions(request: EnrichmentRequest):
         result = await enrich_and_analyze_budget(
             raw_transactions=request.transactions,
             user_id=request.user_id,
+            truelayer_item_id=request.truelayer_item_id,
             analysis_months=request.analysis_months,
             account_holder_name=request.account_holder_name,
             country=request.country
@@ -220,6 +222,7 @@ class StreamingEnrichmentRequest(schemas.BaseModel):
     """Request for streaming transaction enrichment"""
     transactions: List[Dict[str, Any]]
     user_id: str
+    truelayer_item_id: str
     analysis_months: int = 3
     account_holder_name: Optional[str] = None
     country: str = "GB"
@@ -244,6 +247,7 @@ async def enrich_transactions_streaming(request: StreamingEnrichmentRequest):
             async for event in service.enrich_transactions_streaming(
                 raw_transactions=request.transactions,
                 user_id=request.user_id,
+                truelayer_item_id=request.truelayer_item_id,
                 account_holder_name=request.account_holder_name,
                 country=request.country
             ):

@@ -154,6 +154,7 @@ export function registerBudgetAnalysisRoutes(app: Express): void {
               timestamp: t.timestamp,
             })),
             user_id: userId,
+            truelayer_item_id: trueLayerItem.id,
             analysis_months: analysisMonths,
             account_holder_name: accountHolderName,
             country: userCountry,
