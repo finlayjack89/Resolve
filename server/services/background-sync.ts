@@ -274,10 +274,13 @@ async function syncAccount(item: TrueLayerItem): Promise<void> {
 
   try {
     console.log(`[Background Sync] Starting sync for account ${accountId} (${item.institutionName})`);
+    console.log(`[Background Sync] Current connection status: ${item.connectionStatus}, consent expires: ${item.consentExpiresAt}`);
 
-    // Check if connection is still valid
-    if (item.connectionStatus !== "connected" && item.connectionStatus !== "active") {
-      console.log(`[Background Sync] Account ${accountId} is not connected, skipping`);
+    // Only skip accounts that are truly disconnected or have unrecoverable errors
+    // "expired" status means the token expired but we can try to refresh it
+    const skipStatuses = ["disconnected", "token_error"];
+    if (skipStatuses.includes(item.connectionStatus || "")) {
+      console.log(`[Background Sync] Account ${accountId} has unrecoverable status '${item.connectionStatus}', skipping`);
       return;
     }
 
@@ -291,8 +294,9 @@ async function syncAccount(item: TrueLayerItem): Promise<void> {
       return;
     }
 
-    // Check if token is expired and refresh if needed
-    const isExpired = item.consentExpiresAt && new Date(item.consentExpiresAt) < new Date();
+    // Check if token is expired (either by consent date or by connection status)
+    const isExpired = (item.consentExpiresAt && new Date(item.consentExpiresAt) < new Date()) 
+      || item.connectionStatus === "expired";
     
     if (isExpired && item.refreshTokenEncrypted) {
       try {
@@ -302,20 +306,27 @@ async function syncAccount(item: TrueLayerItem): Promise<void> {
         
         accessToken = newTokens.access_token;
         
+        // Update tokens AND set connection status back to active
         await storage.updateTrueLayerItem(accountId, {
           accessTokenEncrypted: encryptToken(newTokens.access_token),
           refreshTokenEncrypted: newTokens.refresh_token 
             ? encryptToken(newTokens.refresh_token) 
             : item.refreshTokenEncrypted,
           consentExpiresAt: new Date(Date.now() + newTokens.expires_in * 1000),
+          connectionStatus: "active",  // Reset to active after successful refresh
         });
         
-        console.log(`[Background Sync] Token refreshed successfully for account ${accountId}`);
+        console.log(`[Background Sync] Token refreshed successfully for account ${accountId}, status set to active`);
       } catch (refreshError) {
         console.error(`[Background Sync] Token refresh failed for account ${accountId}:`, refreshError);
         await storage.updateTrueLayerItem(accountId, { connectionStatus: "expired" });
         return;
       }
+    } else if (isExpired && !item.refreshTokenEncrypted) {
+      // No refresh token available, user needs to reconnect
+      console.log(`[Background Sync] Account ${accountId} is expired and has no refresh token, requires reconnection`);
+      await storage.updateTrueLayerItem(accountId, { connectionStatus: "expired" });
+      return;
     }
 
     // Fetch transactions from TrueLayer (90 days)

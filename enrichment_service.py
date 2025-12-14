@@ -229,12 +229,22 @@ class EnrichmentService:
             if tx_data.get("account_holder_name"):
                 create_kwargs["account_holder_name"] = tx_data["account_holder_name"]
             
+            # Log the API call for debugging
+            print(f"[EnrichmentService] >>> Calling Ntropy SDK transactions.create() with:")
+            print(f"  - id: {create_kwargs['id'][:20]}...")
+            print(f"  - description: {create_kwargs['description'][:40]}...")
+            print(f"  - account_holder_id: {create_kwargs['account_holder_id'][:16]}...")
+            print(f"  - account_holder_name: {create_kwargs.get('account_holder_name', 'N/A')}")
+            print(f"  - location: {create_kwargs['location']}")
+            
             enriched = self.sdk.transactions.create(**create_kwargs)
             result = enriched.model_dump() if hasattr(enriched, 'model_dump') else None
             if result:
                 merchant_name = result.get('merchant', {}).get('name', 'Unknown') if result.get('merchant') else 'Unknown'
                 labels = result.get('labels', [])
                 print(f"[EnrichmentService] ✓ Enriched: {tx_data['description'][:30]}... → {merchant_name} [{', '.join(labels[:3])}]")
+            else:
+                print(f"[EnrichmentService] ⚠ No result from Ntropy for {tx_data['id'][:20]}...")
             return result
         except Exception as e:
             print(f"[EnrichmentService] ✗ Error enriching {tx_data['id']}: {e}")
