@@ -178,17 +178,34 @@ class EnrichmentService:
         country: str = "GB"
     ) -> bool:
         """
-        DEPRECATED: Account holders are now created implicitly with transactions.
+        Ensure an account holder exists in Ntropy before enriching transactions.
         
-        As of Ntropy SDK updates, account holders are created automatically when
-        the first transaction is enriched with account_holder_id and optionally 
-        account_holder_name. This method is kept for backward compatibility but 
-        is now a no-op.
+        As of Ntropy SDK v5.x, account holders MUST be created explicitly before
+        enriching transactions. The account holder name is set here, NOT on 
+        individual transactions.
         
-        Returns True always (no separate account holder creation needed).
+        Returns True if account holder exists/created, False on error.
         """
-        print(f"[EnrichmentService] Note: Account holder {hashed_user_id[:8]}... will be created implicitly with first transaction")
-        return True
+        if not self.sdk or not NTROPY_AVAILABLE:
+            print(f"[EnrichmentService] SDK not available, skipping account holder creation")
+            return False
+            
+        try:
+            print(f"[EnrichmentService] Creating/verifying account holder {hashed_user_id[:16]}...")
+            self.sdk.account_holders.create(
+                id=hashed_user_id,
+                type="consumer",
+                name=account_holder_name or "Account Holder"
+            )
+            print(f"[EnrichmentService] ✓ Account holder {hashed_user_id[:16]}... created with name: {account_holder_name}")
+            return True
+        except Exception as e:
+            error_str = str(e).lower()
+            if "already exists" in error_str or "conflict" in error_str or "409" in error_str:
+                print(f"[EnrichmentService] ✓ Account holder {hashed_user_id[:16]}... already exists")
+                return True
+            print(f"[EnrichmentService] ✗ Failed to create account holder: {e}")
+            return False
     
     def _determine_entry_type(self, norm_tx: TrueLayerIngestModel) -> str:
         """
@@ -220,8 +237,8 @@ class EnrichmentService:
     def _enrich_single_sync(self, tx_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Synchronous single transaction enrichment for thread pool"""
         try:
-            # Build the transaction create call with all parameters
-            # Account holder is created implicitly when first transaction is enriched
+            # Build the transaction create call
+            # Note: account_holder_name is set on the account holder, NOT on transactions
             create_kwargs = {
                 "id": tx_data["id"],
                 "description": tx_data["description"],
@@ -233,16 +250,11 @@ class EnrichmentService:
                 "location": {"country": tx_data.get("country", "GB")},
             }
             
-            # Add account holder name if provided (improves enrichment quality)
-            if tx_data.get("account_holder_name"):
-                create_kwargs["account_holder_name"] = tx_data["account_holder_name"]
-            
             # Log the API call for debugging
             print(f"[EnrichmentService] >>> Calling Ntropy SDK transactions.create() with:")
             print(f"  - id: {create_kwargs['id'][:20]}...")
             print(f"  - description: {create_kwargs['description'][:40]}...")
             print(f"  - account_holder_id: {create_kwargs['account_holder_id'][:16]}...")
-            print(f"  - account_holder_name: {create_kwargs.get('account_holder_name', 'N/A')}")
             print(f"  - location: {create_kwargs['location']}")
             
             enriched = self.sdk.transactions.create(**create_kwargs)
@@ -312,10 +324,12 @@ class EnrichmentService:
         hashed_account_holder_id = self._hash_account_holder_id(user_id, truelayer_item_id)
         
         print(f"[EnrichmentService] Account holder context:")
-        print(f"  - Hashed ID: {hashed_account_holder_id[:8]}...")
+        print(f"  - Hashed ID: {hashed_account_holder_id[:16]}...")
         print(f"  - Name: {account_holder_name or '(not provided)'}")
         print(f"  - Country: {country}")
-        print(f"  - Note: Account holder will be created implicitly with first transaction")
+        
+        # Create account holder explicitly (required in Ntropy SDK v5.x)
+        self._create_or_get_account_holder(hashed_account_holder_id, account_holder_name, country)
         
         # Phase 2: Enrich with Ntropy
         results: List[NtropyOutputModel] = []
@@ -332,6 +346,7 @@ class EnrichmentService:
                 batch = normalized[batch_start:batch_end]
                 
                 # Prepare batch data with all enrichment context
+                # Note: account_holder_name is set on the account holder, not transactions
                 tx_data_list = []
                 for norm_tx in batch:
                     entry_type = self._determine_entry_type(norm_tx)
@@ -343,7 +358,6 @@ class EnrichmentService:
                         "currency": norm_tx.currency,
                         "date": norm_tx.timestamp,
                         "account_holder_id": hashed_account_holder_id,
-                        "account_holder_name": account_holder_name,
                         "country": country,
                     })
                 
@@ -589,8 +603,11 @@ class EnrichmentService:
         # Phase 2: Enrich with Ntropy (if available)
         if self.sdk and NTROPY_AVAILABLE:
             try:
+                # Create account holder explicitly (required in Ntropy SDK v5.x)
+                self._create_or_get_account_holder(hashed_account_holder_id, account_holder_name, country)
+                
                 # Prepare transaction data for concurrent processing
-                # Account holder is created implicitly with first transaction
+                # Note: account_holder_name is set on the account holder, not transactions
                 tx_data_list = []
                 for norm_tx in normalized:
                     entry_type = self._determine_entry_type(norm_tx)
@@ -602,7 +619,6 @@ class EnrichmentService:
                         "currency": norm_tx.currency,
                         "date": norm_tx.timestamp,
                         "account_holder_id": hashed_account_holder_id,
-                        "account_holder_name": account_holder_name,
                         "country": country,
                     })
                 
