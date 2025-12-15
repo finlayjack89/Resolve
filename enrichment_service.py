@@ -181,9 +181,9 @@ class EnrichmentService:
         DEPRECATED: Account holders are now created implicitly with transactions.
         
         As of Ntropy SDK updates, account holders are created automatically when
-        the first transaction is enriched with account_holder_id, account_holder_type,
-        and optionally account_holder_name. This method is kept for backward 
-        compatibility but is now a no-op.
+        the first transaction is enriched with account_holder_id and optionally 
+        account_holder_name. This method is kept for backward compatibility but 
+        is now a no-op.
         
         Returns True always (no separate account holder creation needed).
         """
@@ -230,7 +230,6 @@ class EnrichmentService:
                 "currency": tx_data["currency"],
                 "date": tx_data["date"],
                 "account_holder_id": tx_data["account_holder_id"],
-                "account_holder_type": "consumer",
                 "location": {"country": tx_data.get("country", "GB")},
             }
             
