@@ -293,4 +293,86 @@ export function registerTransactionRoutes(app: Express): void {
       res.status(500).json({ message: error.message || "Failed to fetch categories" });
     }
   });
+
+  // Phase 2: Subscription Detective - LangGraph Agent Integration
+  app.post("/api/transactions/:id/classify-subscription", requireAuth, async (req, res) => {
+    try {
+      const userId = (req.user as any).id;
+      const transactionId = req.params.id;
+      
+      const transaction = await storage.getEnrichedTransactionById(transactionId);
+      
+      if (!transaction) {
+        return res.status(404).json({ message: "Transaction not found" });
+      }
+      
+      if (transaction.userId !== userId) {
+        return res.status(403).json({ message: "Access denied" });
+      }
+      
+      // Call Python FastAPI subscription detective endpoint
+      const pythonResponse = await fetch("http://127.0.0.1:8000/classify-subscription", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          transaction_id: transactionId,
+          merchant_name: transaction.merchantCleanName || transaction.originalDescription || "Unknown",
+          amount_cents: transaction.amountCents,
+          currency: "GBP",
+          description: transaction.originalDescription,
+        }),
+      });
+      
+      if (!pythonResponse.ok) {
+        const errorText = await pythonResponse.text();
+        console.error("[TransactionRoutes] Python classify-subscription error:", errorText);
+        return res.status(502).json({ message: "Subscription classification service unavailable" });
+      }
+      
+      const classification = await pythonResponse.json();
+      
+      // Update transaction with classification results
+      if (classification.is_subscription) {
+        const existingTrace = transaction.reasoningTrace || { 
+          steps: [], 
+          finalCategory: '', 
+          finalConfidence: 0, 
+          timestamp: new Date().toISOString() 
+        };
+        
+        const updatedTrace: ReasoningTrace = {
+          ...existingTrace,
+          steps: [
+            ...existingTrace.steps,
+            ...classification.reasoning_trace.map((step: { step: string; detail: string }) => ({
+              step: step.step,
+              detail: step.detail,
+              confidence: classification.confidence,
+            })),
+          ],
+          finalCategory: classification.is_subscription ? MasterCategory.SUBSCRIPTIONS : existingTrace.finalCategory,
+          finalConfidence: classification.confidence,
+          timestamp: new Date().toISOString(),
+        };
+        
+        await storage.updateEnrichedTransactionCategories(transactionId, {
+          isSubscription: classification.is_subscription,
+          masterCategory: classification.is_subscription ? MasterCategory.SUBSCRIPTIONS : (transaction.masterCategory ?? undefined),
+          aiConfidenceScore: classification.confidence,
+          reasoningTrace: updatedTrace,
+        });
+      }
+      
+      res.json({
+        transactionId: classification.transaction_id,
+        isSubscription: classification.is_subscription,
+        productName: classification.product_name,
+        confidence: classification.confidence,
+        reasoningTrace: classification.reasoning_trace,
+      });
+    } catch (error: any) {
+      console.error("[TransactionRoutes] Error classifying subscription:", error);
+      res.status(500).json({ message: error.message || "Failed to classify subscription" });
+    }
+  });
 }

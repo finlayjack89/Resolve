@@ -265,3 +265,78 @@ async def enrich_transactions_streaming(request: StreamingEnrichmentRequest):
             "X-Accel-Buffering": "no"
         }
     )
+
+
+# --- Subscription Detective Endpoint (Phase 2) ---
+try:
+    from agents.graph import classify_subscription, TransactionInput, SubscriptionClassification
+    SUBSCRIPTION_DETECTIVE_AVAILABLE = True
+    print("[SubscriptionDetective] LangGraph agent loaded successfully")
+except ImportError as e:
+    SUBSCRIPTION_DETECTIVE_AVAILABLE = False
+    print(f"[SubscriptionDetective] Warning: Agent not available - {e}")
+
+
+class ClassifySubscriptionRequest(schemas.BaseModel):
+    """Request to classify a transaction as subscription or one-off"""
+    transaction_id: str
+    merchant_name: str
+    amount_cents: int
+    currency: str = "GBP"
+    description: Optional[str] = None
+
+
+class ClassifySubscriptionResponse(schemas.BaseModel):
+    """Response from subscription classification"""
+    transaction_id: str
+    is_subscription: bool
+    subscription_id: Optional[str] = None
+    product_name: Optional[str] = None
+    confidence: float
+    reasoning_trace: List[Dict[str, str]]
+
+
+@app.post("/classify-subscription", response_model=ClassifySubscriptionResponse)
+async def classify_subscription_endpoint(request: ClassifySubscriptionRequest):
+    """
+    Classify a transaction as a subscription or one-off purchase.
+    
+    This endpoint runs the Subscription Detective LangGraph agent:
+    1. Checks the subscription_catalog for exact matches
+    2. If no match, searches the web for subscription pricing
+    3. Updates the catalog with discovered plans
+    4. Returns classification with reasoning trace
+    """
+    if not SUBSCRIPTION_DETECTIVE_AVAILABLE:
+        raise HTTPException(
+            status_code=503,
+            detail="Subscription Detective agent not available"
+        )
+    
+    print(f"[SubscriptionDetective] Classifying: {request.merchant_name} ({request.amount_cents/100:.2f} {request.currency})")
+    
+    try:
+        transaction = TransactionInput(
+            transaction_id=request.transaction_id,
+            merchant_name=request.merchant_name,
+            amount_cents=request.amount_cents,
+            currency=request.currency,
+            description=request.description
+        )
+        
+        result = await classify_subscription(transaction=transaction, db_connection=None)
+        
+        print(f"[SubscriptionDetective] Result: is_subscription={result.is_subscription}, confidence={result.confidence:.0%}")
+        
+        return ClassifySubscriptionResponse(
+            transaction_id=result.transaction_id,
+            is_subscription=result.is_subscription,
+            subscription_id=result.subscription_id,
+            product_name=result.product_name,
+            confidence=result.confidence,
+            reasoning_trace=result.reasoning_trace
+        )
+        
+    except Exception as e:
+        print(f"[SubscriptionDetective] Error: {e}", file=sys.stderr)
+        raise HTTPException(status_code=500, detail=f"Classification failed: {str(e)}")
