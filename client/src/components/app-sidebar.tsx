@@ -1,7 +1,7 @@
-import { Home, CreditCard, BarChart3, LogOut, Calendar, Wallet } from "lucide-react";
+import { Home, CreditCard, BarChart3, LogOut, Calendar, Wallet, RotateCw } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import { useAuth } from "@/lib/auth-context";
-import { logoImage } from "@/components/logo";
+import { LogoIcon } from "@/components/logo";
 import {
   Sidebar,
   SidebarContent,
@@ -19,6 +19,7 @@ const navItems = [
   { href: "/", icon: Home, label: "Dashboard", testId: "link-dashboard" },
   { href: "/accounts", icon: CreditCard, label: "Accounts", testId: "link-accounts" },
   { href: "/current-finances", icon: Wallet, label: "Current Finances", testId: "link-current-finances" },
+  { href: "/subscriptions", icon: RotateCw, label: "Subscriptions", testId: "link-subscriptions" },
   { href: "/plan", icon: BarChart3, label: "Plan Details", testId: "link-plan-details" },
   { href: "/calendar", icon: Calendar, label: "Payment Calendar", testId: "link-calendar" },
 ];
@@ -31,7 +32,7 @@ export function AppSidebar() {
     <Sidebar>
       <SidebarHeader className="border-b border-sidebar-border">
         <div className="flex items-center gap-2 px-4 py-3">
-          <img src={logoImage} alt="Resolve" className="h-8 w-8 object-contain" />
+          <LogoIcon size="md" />
           <span className="font-semibold">Resolve</span>
         </div>
       </SidebarHeader>

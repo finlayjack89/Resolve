@@ -388,6 +388,7 @@ export default function BankAccountDetail() {
   const accountId = params?.id;
   const currency = user?.currency || "GBP";
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
+  const [selectedMasterCategory, setSelectedMasterCategory] = useState<string | null>(null);
 
   const { data: account, isLoading, refetch } = useQuery<AccountDetailResponse>({
     queryKey: ["/api/current-finances/account", accountId],
@@ -466,8 +467,14 @@ export default function BankAccountDetail() {
     : "Never";
 
   const filterByCategory = (transactions: EnrichedTransactionDetail[]) => {
-    if (!selectedCategory) return transactions;
-    return transactions.filter(tx => tx.ukCategory === selectedCategory);
+    let filtered = transactions;
+    if (selectedCategory) {
+      filtered = filtered.filter(tx => tx.ukCategory === selectedCategory);
+    }
+    if (selectedMasterCategory) {
+      filtered = filtered.filter(tx => (tx.masterCategory || "uncategorized") === selectedMasterCategory);
+    }
+    return filtered;
   };
 
   const filteredTransactions = filterByCategory(account.transactions);
@@ -477,6 +484,19 @@ export default function BankAccountDetail() {
   const selectedCategoryDisplay = selectedCategory 
     ? account.categoryBreakdown.find(c => c.category === selectedCategory)?.displayName || selectedCategory.replace(/_/g, " ")
     : null;
+
+  // Calculate master category stats for Category Explorer
+  const masterCategoryStats = Object.entries(masterCategoryConfig).map(([key, config]) => {
+    const categoryTxs = account.transactions.filter(tx => (tx.masterCategory || "uncategorized") === key);
+    const totalCents = categoryTxs.reduce((sum, tx) => sum + Math.abs(tx.amountCents), 0);
+    return {
+      key,
+      ...config,
+      transactionCount: categoryTxs.length,
+      totalCents,
+    };
+  }).filter(cat => cat.transactionCount > 0)
+    .sort((a, b) => b.totalCents - a.totalCents);
 
   return (
     <div className="container mx-auto max-w-6xl px-4 py-8">
@@ -660,24 +680,113 @@ export default function BankAccountDetail() {
           </Card>
         )}
 
+        {/* Category Explorer - Horizontal scrollable pills */}
+        {masterCategoryStats.length > 0 && (
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base">Quick Filter</CardTitle>
+              <CardDescription>Tap a category to filter transactions</CardDescription>
+            </CardHeader>
+            <CardContent className="pb-4">
+              <div className="flex gap-2 overflow-x-auto pb-2 -mx-2 px-2 scrollbar-hide" data-testid="category-explorer">
+                <Button
+                  variant={selectedMasterCategory === null ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => setSelectedMasterCategory(null)}
+                  className="shrink-0"
+                  data-testid="pill-all-categories"
+                >
+                  All
+                </Button>
+                {masterCategoryStats.map((cat) => {
+                  const CatIcon = cat.icon;
+                  const isSelected = selectedMasterCategory === cat.key;
+                  return (
+                    <Button
+                      key={cat.key}
+                      variant={isSelected ? "default" : "outline"}
+                      size="sm"
+                      onClick={() => setSelectedMasterCategory(isSelected ? null : cat.key)}
+                      className={`shrink-0 gap-1.5 ${isSelected ? "" : cat.color}`}
+                      data-testid={`pill-category-${cat.key}`}
+                    >
+                      <CatIcon className="h-3.5 w-3.5" />
+                      <span>{cat.displayName}</span>
+                      <Badge 
+                        variant="secondary" 
+                        className="ml-1 text-xs px-1.5 py-0 h-4 min-w-[1.25rem] bg-background/50"
+                      >
+                        {cat.transactionCount}
+                      </Badge>
+                    </Button>
+                  );
+                })}
+              </div>
+              {selectedMasterCategory && (
+                <div className="mt-4 p-3 rounded-lg bg-muted/50 border">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      {(() => {
+                        const config = masterCategoryConfig[selectedMasterCategory];
+                        const Icon = config?.icon || HelpCircle;
+                        return (
+                          <>
+                            <Icon className="h-5 w-5" />
+                            <span className="font-semibold">{config?.displayName || selectedMasterCategory}</span>
+                          </>
+                        );
+                      })()}
+                    </div>
+                    <div className="text-right">
+                      <p className="text-lg font-mono font-bold">
+                        {formatCurrency(
+                          masterCategoryStats.find(c => c.key === selectedMasterCategory)?.totalCents || 0,
+                          currency
+                        )}
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        {masterCategoryStats.find(c => c.key === selectedMasterCategory)?.transactionCount || 0} transactions
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
+
         {/* Transaction Tabs */}
         <div className="space-y-4">
-          {selectedCategory && (
-            <div className="flex items-center gap-2">
-              <Badge 
-                variant="secondary" 
-                className="gap-1"
-                data-testid="badge-active-filter"
-              >
-                Filtered: {selectedCategoryDisplay}
-              </Badge>
+          {(selectedCategory || selectedMasterCategory) && (
+            <div className="flex items-center gap-2 flex-wrap">
+              {selectedCategory && (
+                <Badge 
+                  variant="secondary" 
+                  className="gap-1"
+                  data-testid="badge-active-filter"
+                >
+                  UK Category: {selectedCategoryDisplay}
+                </Badge>
+              )}
+              {selectedMasterCategory && (
+                <Badge 
+                  variant="secondary" 
+                  className="gap-1"
+                  data-testid="badge-master-category-filter"
+                >
+                  {masterCategoryConfig[selectedMasterCategory]?.displayName || selectedMasterCategory}
+                </Badge>
+              )}
               <Button
                 variant="ghost"
                 size="sm"
-                onClick={() => setSelectedCategory(null)}
+                onClick={() => {
+                  setSelectedCategory(null);
+                  setSelectedMasterCategory(null);
+                }}
                 data-testid="button-clear-filter"
               >
-                Clear
+                Clear All
               </Button>
             </div>
           )}
