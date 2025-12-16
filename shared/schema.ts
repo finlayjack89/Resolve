@@ -281,6 +281,36 @@ export const enrichedTransactions = pgTable("enriched_transactions", {
   userTransactionUnique: unique().on(table.userId, table.trueLayerTransactionId),
 }));
 
+// Email Connections - Stores Nylas OAuth grants/tokens for email access
+export const emailConnections = pgTable("email_connections", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  provider: varchar("provider").notNull().default("nylas"), // e.g., "nylas"
+  grantId: varchar("grant_id").notNull(), // Nylas grant ID
+  email: varchar("email").notNull(),
+  accessToken: text("access_token").notNull(), // Encrypted
+  refreshToken: text("refresh_token"), // Optional, encrypted
+  lastSyncAt: timestamp("last_sync_at"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+// Email Receipts - Stores parsed receipt emails for transaction matching
+export const emailReceipts = pgTable("email_receipts", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  connectionId: varchar("connection_id").notNull().references(() => emailConnections.id, { onDelete: "cascade" }),
+  nylasMessageId: varchar("nylas_message_id").notNull().unique(),
+  senderEmail: varchar("sender_email"),
+  subject: varchar("subject"),
+  receivedAt: timestamp("received_at"),
+  merchantName: varchar("merchant_name"), // Extracted from receipt
+  amountCents: integer("amount_cents"), // Extracted from receipt
+  currency: varchar("currency"), // Extracted from receipt
+  rawBody: text("raw_body"),
+  parsedData: jsonb("parsed_data").$type<Record<string, any>>(), // Full extraction
+  matchedTransactionId: varchar("matched_transaction_id"), // Links to enriched_transactions
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
 // TypeScript Types
 export type User = typeof users.$inferSelect;
 export type InsertUser = typeof users.$inferInsert;
@@ -314,6 +344,12 @@ export type InsertTrueLayerItem = typeof trueLayerItems.$inferInsert;
 
 export type EnrichedTransaction = typeof enrichedTransactions.$inferSelect;
 export type InsertEnrichedTransaction = typeof enrichedTransactions.$inferInsert;
+
+export type EmailConnection = typeof emailConnections.$inferSelect;
+export type InsertEmailConnection = typeof emailConnections.$inferInsert;
+
+export type EmailReceipt = typeof emailReceipts.$inferSelect;
+export type InsertEmailReceipt = typeof emailReceipts.$inferInsert;
 
 // API Request/Response Types
 export interface MinPaymentRule {
