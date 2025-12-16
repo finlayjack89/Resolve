@@ -16,6 +16,12 @@ import {
   TableHeader, 
   TableRow 
 } from "@/components/ui/table";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import { Skeleton } from "@/components/ui/skeleton";
 import { 
   ArrowLeft, 
   RefreshCw,
@@ -35,7 +41,13 @@ import {
   Zap,
   CreditCard,
   Gift,
-  HelpCircle
+  HelpCircle,
+  RotateCw,
+  ShoppingBag,
+  Ticket,
+  ArrowLeftRight,
+  Info,
+  Sparkles
 } from "lucide-react";
 import { formatCurrency } from "@/lib/format";
 import { useAuth } from "@/lib/auth-context";
@@ -65,9 +77,11 @@ interface EnrichedTransactionDetail {
   entryType: string;
   ukCategory: string | null;
   budgetCategory: string | null;
+  masterCategory: string | null;
   transactionDate: string | null;
   isRecurring: boolean | null;
   recurrenceFrequency: string | null;
+  isSubscription: boolean | null;
 }
 
 interface AccountAnalysisSummary {
@@ -150,6 +164,144 @@ const budgetGroupColors: Record<string, string> = {
   debt: "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200",
   other: "bg-gray-100 text-gray-800 dark:bg-gray-900 dark:text-gray-200",
 };
+
+const masterCategoryConfig: Record<string, { icon: typeof Wallet; color: string; displayName: string }> = {
+  bills_utilities: { icon: Zap, color: "bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300", displayName: "Bills & Utilities" },
+  subscriptions: { icon: RotateCw, color: "bg-purple-100 text-purple-700 dark:bg-purple-900 dark:text-purple-300", displayName: "Subscriptions" },
+  transport: { icon: Car, color: "bg-amber-100 text-amber-700 dark:bg-amber-900 dark:text-amber-300", displayName: "Transport" },
+  groceries: { icon: ShoppingCart, color: "bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300", displayName: "Groceries" },
+  eating_out: { icon: Utensils, color: "bg-orange-100 text-orange-700 dark:bg-orange-900 dark:text-orange-300", displayName: "Eating Out" },
+  shopping: { icon: ShoppingBag, color: "bg-pink-100 text-pink-700 dark:bg-pink-900 dark:text-pink-300", displayName: "Shopping" },
+  entertainment: { icon: Ticket, color: "bg-violet-100 text-violet-700 dark:bg-violet-900 dark:text-violet-300", displayName: "Entertainment" },
+  health_wellbeing: { icon: Heart, color: "bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300", displayName: "Health & Wellbeing" },
+  transfers: { icon: ArrowLeftRight, color: "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300", displayName: "Transfers" },
+  income: { icon: TrendingUp, color: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900 dark:text-emerald-300", displayName: "Income" },
+  uncategorized: { icon: HelpCircle, color: "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300", displayName: "Uncategorized" },
+};
+
+interface ReasoningStep {
+  step: string;
+  input: string;
+  output: string;
+  confidence?: number;
+}
+
+interface ReasoningTrace {
+  steps: ReasoningStep[];
+  finalDecision: string;
+  totalConfidence: number;
+}
+
+interface TransactionTraceResponse {
+  transactionId: string;
+  merchantName: string | null;
+  amountCents: number;
+  transactionDate: string | null;
+  masterCategory: string | null;
+  aiConfidenceScore: number | null;
+  reasoningTrace: ReasoningTrace | null;
+  isSubscription: boolean | null;
+  subscriptionDetails: {
+    id: string;
+    productName: string;
+    merchantName: string;
+    category: string | null;
+  } | null;
+  userCorrectedCategory: string | null;
+}
+
+function CategoryBadgeWithTrace({ 
+  transactionId, 
+  masterCategory, 
+  catConfig 
+}: { 
+  transactionId: string; 
+  masterCategory: string;
+  catConfig: { icon: typeof Wallet; color: string; displayName: string };
+}) {
+  const [isOpen, setIsOpen] = useState(false);
+  const CategoryIcon = catConfig.icon;
+  
+  const { data: traceData, isLoading } = useQuery<TransactionTraceResponse>({
+    queryKey: ['/api/transactions', transactionId, 'trace'],
+    enabled: isOpen,
+  });
+
+  return (
+    <Popover open={isOpen} onOpenChange={setIsOpen}>
+      <PopoverTrigger asChild>
+        <Badge 
+          variant="secondary" 
+          className={`${catConfig.color} text-xs font-medium cursor-pointer hover-elevate`}
+          data-testid={`badge-category-${transactionId}`}
+        >
+          <CategoryIcon className="h-3 w-3 mr-1" />
+          {catConfig.displayName}
+          <Info className="h-3 w-3 ml-1 opacity-60" />
+        </Badge>
+      </PopoverTrigger>
+      <PopoverContent className="w-80" align="start">
+        <div className="space-y-3">
+          <div className="flex items-center gap-2">
+            <Sparkles className="h-4 w-4 text-primary" />
+            <h4 className="font-semibold text-sm">How was this categorized?</h4>
+          </div>
+          
+          {isLoading ? (
+            <div className="space-y-2">
+              <Skeleton className="h-4 w-full" />
+              <Skeleton className="h-4 w-3/4" />
+              <Skeleton className="h-4 w-5/6" />
+            </div>
+          ) : traceData?.reasoningTrace ? (
+            <div className="space-y-3">
+              {traceData.reasoningTrace.steps.map((step, idx) => (
+                <div key={idx} className="text-xs space-y-1 border-l-2 border-muted pl-3">
+                  <p className="font-medium text-muted-foreground">{step.step}</p>
+                  <p className="text-foreground">{step.output}</p>
+                </div>
+              ))}
+              <div className="pt-2 border-t">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-muted-foreground">Final Decision</span>
+                  <Badge variant="outline" className="text-xs">
+                    {traceData.reasoningTrace.finalDecision}
+                  </Badge>
+                </div>
+                {traceData.aiConfidenceScore && (
+                  <div className="flex items-center justify-between text-xs mt-1">
+                    <span className="text-muted-foreground">Confidence</span>
+                    <span className="font-mono">{Math.round(traceData.aiConfidenceScore * 100)}%</span>
+                  </div>
+                )}
+              </div>
+              {traceData.isSubscription && traceData.subscriptionDetails && (
+                <div className="pt-2 border-t">
+                  <div className="flex items-center gap-1 text-xs text-purple-600 dark:text-purple-400">
+                    <RotateCw className="h-3 w-3" />
+                    <span>Matched subscription: {traceData.subscriptionDetails.productName}</span>
+                  </div>
+                </div>
+              )}
+              {traceData.userCorrectedCategory && (
+                <div className="pt-2 border-t">
+                  <div className="flex items-center gap-1 text-xs text-amber-600 dark:text-amber-400">
+                    <CheckCircle2 className="h-3 w-3" />
+                    <span>You corrected this to: {traceData.userCorrectedCategory}</span>
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              No detailed reasoning available for this transaction.
+            </p>
+          )}
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
 
 interface MonthGroup {
   monthKey: string;
@@ -583,35 +735,51 @@ function TransactionTable({ transactions, currency }: { transactions: EnrichedTr
         </TableHeader>
         <TableBody>
           {transactions.slice(0, 50).map((tx) => {
-            const IconComponent = categoryIcons[tx.ukCategory || "other"] || HelpCircle;
+            const masterCat = tx.masterCategory || "uncategorized";
+            const catConfig = masterCategoryConfig[masterCat] || masterCategoryConfig.uncategorized;
+            const CategoryIcon = catConfig.icon;
             const isIncoming = tx.entryType === "incoming";
             return (
               <TableRow key={tx.id} data-testid={`row-transaction-${tx.id}`}>
-                <TableCell className="text-muted-foreground">
+                <TableCell className="text-muted-foreground whitespace-nowrap">
                   {tx.transactionDate ? format(new Date(tx.transactionDate), "MMM d, yyyy") : "—"}
                 </TableCell>
                 <TableCell>
-                  <div className="flex items-center gap-2">
-                    {tx.merchantLogoUrl && (
-                      <img src={tx.merchantLogoUrl} alt="" className="h-6 w-6 rounded-full object-contain" />
-                    )}
-                    <div>
-                      <p className="font-medium">{tx.merchantCleanName || tx.originalDescription}</p>
-                      {tx.isRecurring && (
-                        <Badge variant="outline" className="text-xs">
-                          Recurring {tx.recurrenceFrequency && `(${tx.recurrenceFrequency})`}
-                        </Badge>
+                  <div className="flex items-center gap-3">
+                    <div className="h-9 w-9 rounded-full bg-muted flex items-center justify-center shrink-0 overflow-hidden">
+                      {tx.merchantLogoUrl ? (
+                        <img src={tx.merchantLogoUrl} alt="" className="h-full w-full object-cover" />
+                      ) : (
+                        <CategoryIcon className="h-4 w-4 text-muted-foreground" />
                       )}
+                    </div>
+                    <div className="min-w-0">
+                      <p className="font-medium truncate">{tx.merchantCleanName || tx.originalDescription}</p>
+                      <div className="flex items-center gap-1.5 mt-0.5">
+                        {tx.isSubscription && (
+                          <Badge variant="secondary" className="text-xs px-1.5 py-0 h-5">
+                            <RotateCw className="h-3 w-3 mr-1" />
+                            Subscription
+                          </Badge>
+                        )}
+                        {tx.isRecurring && !tx.isSubscription && (
+                          <Badge variant="outline" className="text-xs px-1.5 py-0 h-5">
+                            <Clock className="h-3 w-3 mr-1" />
+                            Recurring
+                          </Badge>
+                        )}
+                      </div>
                     </div>
                   </div>
                 </TableCell>
                 <TableCell>
-                  <div className="flex items-center gap-1">
-                    <IconComponent className="h-4 w-4 text-muted-foreground" />
-                    <span className="capitalize">{tx.ukCategory?.replace(/_/g, " ") || "Other"}</span>
-                  </div>
+                  <CategoryBadgeWithTrace
+                    transactionId={tx.id}
+                    masterCategory={masterCat}
+                    catConfig={catConfig}
+                  />
                 </TableCell>
-                <TableCell className={`text-right font-mono font-semibold ${isIncoming ? "text-green-600 dark:text-green-400" : ""}`}>
+                <TableCell className={`text-right font-mono font-semibold whitespace-nowrap ${isIncoming ? "text-green-600 dark:text-green-400" : ""}`}>
                   {isIncoming ? "+" : "-"}{formatCurrency(Math.abs(tx.amountCents), currency)}
                 </TableCell>
               </TableRow>

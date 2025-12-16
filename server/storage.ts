@@ -1,5 +1,5 @@
 import { 
-  users, accounts, budgets, preferences, plans, lenderRules, trueLayerItems, debtBuckets, enrichedTransactions,
+  users, accounts, budgets, preferences, plans, lenderRules, trueLayerItems, debtBuckets, enrichedTransactions, subscriptionCatalog,
   type User, type InsertUser, 
   type Account, type InsertAccount,
   type Budget, type InsertBudget,
@@ -9,7 +9,9 @@ import {
   type TrueLayerItem, type InsertTrueLayerItem,
   type DebtBucket, type InsertDebtBucket,
   type AccountWithBuckets,
-  type EnrichedTransaction, type InsertEnrichedTransaction
+  type EnrichedTransaction, type InsertEnrichedTransaction,
+  type SubscriptionCatalog, type InsertSubscriptionCatalog,
+  type ReasoningTrace, type ContextData
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, desc, gte } from "drizzle-orm";
@@ -82,6 +84,22 @@ export interface IStorage {
   deleteEnrichedTransactionsByItemId(trueLayerItemId: string): Promise<void>; // NEW: per-account
   cleanupOrphanedEnrichedTransactions(userId: string): Promise<number>; // NEW: cleanup orphans
   updateEnrichedTransactionReconciliation(id: string, updates: { transactionType?: string; linkedTransactionId?: string | null; excludeFromAnalysis?: boolean }): Promise<void>; // Reconciliation updates
+  
+  // Subscription Catalog methods
+  getAllSubscriptions(): Promise<SubscriptionCatalog[]>;
+  getSubscriptionByMerchantAndAmount(merchantName: string, amountCents: number): Promise<SubscriptionCatalog | undefined>;
+  searchSubscriptionsByMerchant(merchantName: string): Promise<SubscriptionCatalog[]>;
+  getEnrichedTransactionById(id: string): Promise<EnrichedTransaction | undefined>;
+  updateEnrichedTransactionCategories(id: string, updates: {
+    masterCategory?: string;
+    isSubscription?: boolean;
+    subscriptionId?: string | null;
+    reasoningTrace?: ReasoningTrace;
+    contextData?: ContextData;
+    aiConfidenceScore?: number;
+    userCorrectedCategory?: string | null;
+    excludeFromAnalysis?: boolean;
+  }): Promise<EnrichedTransaction | undefined>;
 }
 
 type BucketInput = Omit<InsertDebtBucket, 'accountId'>;
@@ -449,6 +467,52 @@ export class DatabaseStorage implements IStorage {
     if (Object.keys(updateObj).length > 0) {
       await db.update(enrichedTransactions).set(updateObj).where(eq(enrichedTransactions.id, id));
     }
+  }
+
+  async getAllSubscriptions(): Promise<SubscriptionCatalog[]> {
+    return await db.select().from(subscriptionCatalog);
+  }
+
+  async getSubscriptionByMerchantAndAmount(merchantName: string, amountCents: number): Promise<SubscriptionCatalog | undefined> {
+    const normalizedName = merchantName.toLowerCase().trim();
+    const allSubs = await db.select().from(subscriptionCatalog);
+    const match = allSubs.find(sub => {
+      const subName = sub.merchantName.toLowerCase().trim();
+      const amountMatch = sub.amountCents === amountCents;
+      const nameMatch = subName === normalizedName || 
+                        normalizedName.includes(subName) || 
+                        subName.includes(normalizedName);
+      return nameMatch && amountMatch;
+    });
+    return match;
+  }
+
+  async searchSubscriptionsByMerchant(merchantName: string): Promise<SubscriptionCatalog[]> {
+    const normalizedName = merchantName.toLowerCase().trim();
+    const allSubs = await db.select().from(subscriptionCatalog);
+    return allSubs.filter(sub => {
+      const subName = sub.merchantName.toLowerCase().trim();
+      return subName.includes(normalizedName) || normalizedName.includes(subName);
+    });
+  }
+
+  async getEnrichedTransactionById(id: string): Promise<EnrichedTransaction | undefined> {
+    const [tx] = await db.select().from(enrichedTransactions).where(eq(enrichedTransactions.id, id));
+    return tx || undefined;
+  }
+
+  async updateEnrichedTransactionCategories(id: string, updates: {
+    masterCategory?: string;
+    isSubscription?: boolean;
+    subscriptionId?: string | null;
+    reasoningTrace?: ReasoningTrace;
+    contextData?: ContextData;
+    aiConfidenceScore?: number;
+    userCorrectedCategory?: string | null;
+    excludeFromAnalysis?: boolean;
+  }): Promise<EnrichedTransaction | undefined> {
+    const [updated] = await db.update(enrichedTransactions).set(updates).where(eq(enrichedTransactions.id, id)).returning();
+    return updated || undefined;
   }
 }
 
@@ -848,6 +912,35 @@ class GuestStorageWrapper implements IStorage {
   
   async updateEnrichedTransactionReconciliation(id: string, updates: { transactionType?: string; linkedTransactionId?: string | null; excludeFromAnalysis?: boolean }): Promise<void> {
     return this.dbStorage.updateEnrichedTransactionReconciliation(id, updates);
+  }
+
+  async getAllSubscriptions(): Promise<SubscriptionCatalog[]> {
+    return this.dbStorage.getAllSubscriptions();
+  }
+
+  async getSubscriptionByMerchantAndAmount(merchantName: string, amountCents: number): Promise<SubscriptionCatalog | undefined> {
+    return this.dbStorage.getSubscriptionByMerchantAndAmount(merchantName, amountCents);
+  }
+
+  async searchSubscriptionsByMerchant(merchantName: string): Promise<SubscriptionCatalog[]> {
+    return this.dbStorage.searchSubscriptionsByMerchant(merchantName);
+  }
+
+  async getEnrichedTransactionById(id: string): Promise<EnrichedTransaction | undefined> {
+    return this.dbStorage.getEnrichedTransactionById(id);
+  }
+
+  async updateEnrichedTransactionCategories(id: string, updates: {
+    masterCategory?: string;
+    isSubscription?: boolean;
+    subscriptionId?: string | null;
+    reasoningTrace?: ReasoningTrace;
+    contextData?: ContextData;
+    aiConfidenceScore?: number;
+    userCorrectedCategory?: string | null;
+    excludeFromAnalysis?: boolean;
+  }): Promise<EnrichedTransaction | undefined> {
+    return this.dbStorage.updateEnrichedTransactionCategories(id, updates);
   }
 }
 
