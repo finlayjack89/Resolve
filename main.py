@@ -558,3 +558,88 @@ async def parse_receipt_email(request: ParseReceiptRequest):
     except Exception as e:
         print(f"[EmailContext] Parse error: {e}")
         return ParseReceiptResponse(error=f"Failed to parse receipt: {str(e)}")
+
+
+# --- Context Hunter: Receipt-to-Transaction Matching ---
+try:
+    from agents.context_hunter import find_matches_for_user, apply_matches, ReceiptMatch
+    CONTEXT_HUNTER_AVAILABLE = True
+    print("[ContextHunter] Context Hunter module loaded successfully")
+except ImportError as e:
+    CONTEXT_HUNTER_AVAILABLE = False
+    print(f"[ContextHunter] Warning: Module not available - {e}")
+
+
+class MatchReceiptsRequest(schemas.BaseModel):
+    """Request to match receipts to transactions"""
+    connection_id: str
+    user_id: str
+    days_back: int = 60
+    min_confidence: float = 0.6
+    apply_matches: bool = False
+
+
+class MatchReceiptsResponse(schemas.BaseModel):
+    """Response with matched receipts and transactions"""
+    matches: List[Dict[str, Any]] = []
+    match_count: int = 0
+    applied_count: int = 0
+    error: Optional[str] = None
+
+
+@app.post("/email/match-receipts", response_model=MatchReceiptsResponse)
+async def match_receipts_to_transactions(request: MatchReceiptsRequest):
+    """
+    Match email receipts to bank transactions.
+    
+    Uses fuzzy matching on merchant name, amount, and date proximity
+    to find the best matches between receipts and transactions.
+    
+    Args:
+        connection_id: The email connection ID (from emailConnections table)
+        user_id: The user ID
+        days_back: How many days of transactions to consider (default 60)
+        min_confidence: Minimum confidence threshold (default 0.6)
+        apply_matches: If true, updates the database with matches
+    
+    Returns:
+        List of matches with confidence scores and match details
+    """
+    if not CONTEXT_HUNTER_AVAILABLE:
+        return MatchReceiptsResponse(error="Context Hunter not available")
+    
+    print(f"[ContextHunter] Matching receipts for connection {request.connection_id}")
+    
+    try:
+        matches = await find_matches_for_user(
+            connection_id=request.connection_id,
+            user_id=request.user_id,
+            days_back=request.days_back,
+            min_confidence=request.min_confidence
+        )
+        
+        applied_count = 0
+        if request.apply_matches and matches:
+            applied_count = await apply_matches(matches)
+        
+        match_dicts = [
+            {
+                "receipt_id": m.receipt_id,
+                "transaction_id": m.transaction_id,
+                "confidence": m.confidence,
+                "match_details": m.match_details
+            }
+            for m in matches
+        ]
+        
+        print(f"[ContextHunter] Found {len(matches)} matches, applied {applied_count}")
+        
+        return MatchReceiptsResponse(
+            matches=match_dicts,
+            match_count=len(matches),
+            applied_count=applied_count
+        )
+        
+    except Exception as e:
+        print(f"[ContextHunter] Error: {e}")
+        return MatchReceiptsResponse(error=f"Matching failed: {str(e)}")

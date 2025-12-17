@@ -119,4 +119,41 @@ router.post("/parse-receipt", requireAuth, async (req, res) => {
   }
 });
 
+router.post("/match-receipts", requireAuth, async (req, res) => {
+  try {
+    const { connectionId, userId, daysBack = 60, minConfidence = 0.6, applyMatches = false } = req.body;
+    
+    if (!connectionId || !userId) {
+      return res.status(400).json({ error: "connectionId and userId are required" });
+    }
+    
+    const response = await fetch(`${PYTHON_API_URL}/email/match-receipts`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        connection_id: connectionId,
+        user_id: userId,
+        days_back: daysBack,
+        min_confidence: minConfidence,
+        apply_matches: applyMatches
+      })
+    });
+    
+    const data = await response.json();
+    
+    if (data.error) {
+      return res.status(500).json({ error: data.error });
+    }
+    
+    res.json({
+      matches: data.matches || [],
+      matchCount: data.match_count || 0,
+      appliedCount: data.applied_count || 0
+    });
+  } catch (error) {
+    console.error("[Email] Match receipts failed:", error);
+    res.status(500).json({ error: "Failed to match receipts to transactions" });
+  }
+});
+
 export default router;
