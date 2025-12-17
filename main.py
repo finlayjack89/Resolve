@@ -340,3 +340,221 @@ async def classify_subscription_endpoint(request: ClassifySubscriptionRequest):
     except Exception as e:
         print(f"[SubscriptionDetective] Error: {e}", file=sys.stderr)
         raise HTTPException(status_code=500, detail=f"Classification failed: {str(e)}")
+
+
+# --- Email Context Hunter Endpoints (Phase 3) ---
+try:
+    from agents.email_context import (
+        get_nylas_connector,
+        parse_receipt_content,
+        EmailReceipt,
+        ParsedReceiptData
+    )
+    EMAIL_CONTEXT_AVAILABLE = True
+    print("[EmailContext] Email context module loaded successfully")
+except ImportError as e:
+    EMAIL_CONTEXT_AVAILABLE = False
+    print(f"[EmailContext] Warning: Module not available - {e}")
+
+
+class NylasAuthUrlRequest(schemas.BaseModel):
+    """Request to generate Nylas OAuth URL"""
+    redirect_uri: str
+    state: Optional[str] = None
+
+
+class NylasAuthUrlResponse(schemas.BaseModel):
+    """Response with Nylas OAuth URL"""
+    auth_url: Optional[str] = None
+    error: Optional[str] = None
+
+
+class NylasExchangeCodeRequest(schemas.BaseModel):
+    """Request to exchange OAuth code for grant"""
+    code: str
+    redirect_uri: str
+
+
+class NylasExchangeCodeResponse(schemas.BaseModel):
+    """Response with Nylas grant information"""
+    grant_id: Optional[str] = None
+    email: Optional[str] = None
+    provider: Optional[str] = None
+    error: Optional[str] = None
+
+
+class FetchReceiptsRequest(schemas.BaseModel):
+    """Request to fetch receipt emails"""
+    grant_id: str
+    since_days: int = 30
+    limit: int = 50
+
+
+class FetchReceiptsResponse(schemas.BaseModel):
+    """Response with fetched receipts"""
+    receipts: List[Dict[str, Any]] = []
+    count: int = 0
+    error: Optional[str] = None
+
+
+class ParseReceiptRequest(schemas.BaseModel):
+    """Request to parse a receipt email"""
+    subject: str
+    body: str
+    sender_email: str
+
+
+class ParseReceiptResponse(schemas.BaseModel):
+    """Response with parsed receipt data"""
+    merchant_name: Optional[str] = None
+    amount_cents: Optional[int] = None
+    currency: Optional[str] = None
+    transaction_date: Optional[str] = None
+    items: List[Dict[str, Any]] = []
+    confidence: float = 0.0
+    error: Optional[str] = None
+
+
+@app.get("/email/status")
+async def email_status():
+    """Check if email integration is available and configured"""
+    if not EMAIL_CONTEXT_AVAILABLE:
+        return {"available": False, "reason": "Module not loaded"}
+    
+    connector = get_nylas_connector()
+    return {
+        "available": connector.is_available(),
+        "nylas_configured": connector.client is not None,
+        "client_id_set": connector.client_id is not None
+    }
+
+
+@app.post("/email/auth-url", response_model=NylasAuthUrlResponse)
+async def get_nylas_auth_url(request: NylasAuthUrlRequest):
+    """
+    Generate Nylas OAuth URL for email connection.
+    
+    The user should be redirected to this URL to authorize email access.
+    """
+    if not EMAIL_CONTEXT_AVAILABLE:
+        return NylasAuthUrlResponse(error="Email integration not available")
+    
+    connector = get_nylas_connector()
+    
+    if not connector.is_available():
+        return NylasAuthUrlResponse(error="Nylas not configured - check API keys")
+    
+    auth_url = connector.get_auth_url(
+        redirect_uri=request.redirect_uri,
+        state=request.state
+    )
+    
+    if auth_url:
+        print(f"[EmailContext] Generated auth URL for redirect to: {request.redirect_uri}")
+        return NylasAuthUrlResponse(auth_url=auth_url)
+    else:
+        return NylasAuthUrlResponse(error="Failed to generate auth URL")
+
+
+@app.post("/email/exchange-code", response_model=NylasExchangeCodeResponse)
+async def exchange_nylas_code(request: NylasExchangeCodeRequest):
+    """
+    Exchange OAuth authorization code for Nylas grant.
+    
+    This should be called after the user completes OAuth and is redirected
+    back to your application with a code parameter.
+    """
+    if not EMAIL_CONTEXT_AVAILABLE:
+        return NylasExchangeCodeResponse(error="Email integration not available")
+    
+    connector = get_nylas_connector()
+    
+    if not connector.is_available():
+        return NylasExchangeCodeResponse(error="Nylas not configured")
+    
+    result = connector.exchange_code_for_grant(
+        code=request.code,
+        redirect_uri=request.redirect_uri
+    )
+    
+    if result:
+        print(f"[EmailContext] Exchanged code for grant: {result.get('grant_id')}")
+        return NylasExchangeCodeResponse(
+            grant_id=result.get("grant_id"),
+            email=result.get("email"),
+            provider=result.get("provider")
+        )
+    else:
+        return NylasExchangeCodeResponse(error="Failed to exchange code for grant")
+
+
+@app.post("/email/fetch-receipts", response_model=FetchReceiptsResponse)
+async def fetch_receipt_emails(request: FetchReceiptsRequest):
+    """
+    Fetch receipt emails from user's mailbox.
+    
+    Requires a valid Nylas grant_id obtained from the OAuth flow.
+    """
+    if not EMAIL_CONTEXT_AVAILABLE:
+        return FetchReceiptsResponse(error="Email integration not available")
+    
+    connector = get_nylas_connector()
+    
+    if not connector.is_available():
+        return FetchReceiptsResponse(error="Nylas not configured")
+    
+    from datetime import datetime, timedelta
+    since = datetime.now() - timedelta(days=request.since_days)
+    
+    receipts = connector.fetch_receipt_emails(
+        grant_id=request.grant_id,
+        since=since,
+        limit=request.limit
+    )
+    
+    receipt_dicts = [
+        {
+            "message_id": r.message_id,
+            "sender_email": r.sender_email,
+            "subject": r.subject,
+            "received_at": r.received_at.isoformat(),
+            "has_body": r.body_text is not None
+        }
+        for r in receipts
+    ]
+    
+    print(f"[EmailContext] Fetched {len(receipts)} receipts for grant {request.grant_id}")
+    return FetchReceiptsResponse(receipts=receipt_dicts, count=len(receipts))
+
+
+@app.post("/email/parse-receipt", response_model=ParseReceiptResponse)
+async def parse_receipt_email(request: ParseReceiptRequest):
+    """
+    Parse a receipt email to extract structured data.
+    
+    Uses Claude to intelligently extract merchant, amount, and items.
+    """
+    if not EMAIL_CONTEXT_AVAILABLE:
+        return ParseReceiptResponse(error="Email integration not available")
+    
+    try:
+        result = await parse_receipt_content(
+            email_subject=request.subject,
+            email_body=request.body,
+            sender_email=request.sender_email
+        )
+        
+        print(f"[EmailContext] Parsed receipt: merchant={result.merchant_name}, amount={result.amount_cents}, confidence={result.confidence}")
+        
+        return ParseReceiptResponse(
+            merchant_name=result.merchant_name,
+            amount_cents=result.amount_cents,
+            currency=result.currency,
+            transaction_date=result.transaction_date,
+            items=result.items,
+            confidence=result.confidence
+        )
+        
+    except Exception as e:
+        print(f"[EmailContext] Parse error: {e}")
+        return ParseReceiptResponse(error=f"Failed to parse receipt: {str(e)}")
