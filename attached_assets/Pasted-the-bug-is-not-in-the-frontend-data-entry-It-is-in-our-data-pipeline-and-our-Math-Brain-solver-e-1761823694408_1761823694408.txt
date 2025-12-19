@@ -1,0 +1,118 @@
+the bug is not in the frontend data entry. It is in our data pipeline and our "Math Brain" (solver_engine.py).
+
+After tracing the code with this new evidence, I have found two distinct, critical bugs.
+
+Bug 1 (P0): The "TODO" Data Bug
+The primary bug that is causing the $0.00 payment is in client/src/components/add-account-dialog.tsx.
+
+In the handleSave function, the minimum payment rule is hard-coded to 0 and is not reading from the form state. The code you provided (commit f786e7db...) has TODO markers where this logic should be.
+
+File: client/src/components/add-account-dialog.tsx Lines: 188-190
+
+TypeScript
+
+// CURRENT BUGGY CODE
+const accountData = {
+  // ... other fields
+  minPaymentRuleFixedCents: 0, // TODO: Get from form
+  minPaymentRulePercentageBps: 0, // TODO: Get from form
+  minPaymentRuleIncludesInterest: false, // TODO: Get from form
+  // ... other fields
+};
+Why this causes the bug:
+
+You are saving $0 and 0% to the database for every account, regardless of what you type in the form.
+
+The server/routes.ts file reads this 0 data from the database.
+
+It passes fixed_cents: 0 and percentage_bps: 0 to the solver_engine.py.
+
+The "Math Brain" correctly calculates final_minimum_payment_var as max(0, 0) = 0.
+
+The constraint payments[key] >= 0 is applied, and the optimizer correctly assigns a $0 payment to the lower-APR "Amex Blue" card to prioritize the higher-APR "Chase" card.
+
+Contradiction Note: Your screenshots are in direct conflict with this code. Screenshot 1 (14.19.53.jpg) shows the correct rules, but the code in add-account-dialog.tsx (commit f786e7db...) makes it impossible to save those rules.
+
+This means you are running a version of the code where lines 188-190 are fixed. You must ensure this fix is applied.
+
+Assuming you are running a version where that is fixed, there is a second bug that your "Amex Blue" test case exposes.
+
+Bug 2 (P1): The "Math Brain" Logic Flaw
+This is the deeper bug you've found. Even after you fix Bug 1, your "Amex Blue" card's minimum payment will still be wrong.
+
+The bug is in solver_engine.py. The logic for calculating a minimum payment that includes interest is flawed.
+
+File: solver_engine.py (commit f786e7db...) Line: 392
+
+Python
+
+# CURRENT BUGGY CODE
+if min_rule.includes_interest:
+    # ... (Correctly calculates interest_for_min_payment_var)
+    # ... (Correctly calculates percent_plus_interest_var)
+
+    # THIS LINE IS THE BUG:
+    model.AddMaxEquality(
+        total_min_var, [fixed_min, percent_min_var]
+    ) 
+    # It uses 'percent_min_var' (just the 1%)
+    # It SHOULD use 'percent_plus_interest_var' (the 1% + interest)
+else:
+    model.AddMaxEquality(
+        total_min_var, [fixed_min, percent_min_var]
+    )
+Why this is a bug:
+
+For your "Amex Blue" card, the rule is max(fixed, % + interest).
+
+The code correctly calculates % + interest and saves it as percent_plus_interest_var.
+
+But when it calculates the max, it forgets to use that variable. It uses percent_min_var (which is just the %) instead.
+
+Trace:
+
+fixed_min = $25.00
+
+percent_min_var (1% of $2,500) = $25.00
+
+interest_for_min_payment_var = $39.56
+
+percent_plus_interest_var = $25.00 + $39.56 = $64.56 (This is the correct value)
+
+Buggy AddMaxEquality runs: total_min_var = max(fixed_min, percent_min_var)
+
+Result: total_min_var = max($25.00, $25.00) = $25.00.
+
+This bug means the solver thinks the minimum payment is $25, not the correct $64.56.
+
+This explains why the minimum is not respected. The system is enforcing a $25 minimum. The reason it's $0\ in your screenshot is due to Bug 1.
+
+Your Action Plan
+Fix Bug 1 (P0): Modify client/src/components/add-account-dialog.tsx to correctly read the minimum payment values from the form state when saving.
+
+Fix Bug 2 (P1): Modify solver_engine.py on line 392 to use the correct variable.
+
+Here is the code for the solver_engine.py fix:
+
+Python
+
+# In solver_engine.py
+if min_rule.includes_interest:
+    # ... (lines 382-390 are correct) ...
+
+    # --- START FIX ---
+    model.AddMaxEquality(
+        total_min_var, [fixed_min, percent_plus_interest_var]
+    )
+    # --- END FIX ---
+else:
+    model.AddMaxEquality(
+        total_min_var, [fixed_min, percent_min_var]
+    )
+After you fix both of these bugs, the system will:
+
+Correctly save the "Amex Blue" rule to the database.
+
+Correctly calculate its minimum payment as $64.56.
+
+Correctly enforce payments['Amex Blue'] >= 64.56 in the plan.

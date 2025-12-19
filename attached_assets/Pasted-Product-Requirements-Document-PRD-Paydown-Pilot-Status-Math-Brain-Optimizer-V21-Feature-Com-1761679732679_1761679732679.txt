@@ -1,0 +1,115 @@
+Product Requirements Document (PRD): Paydown Pilot
+Status:
+"Math Brain" (Optimizer): V21 Feature Complete.
+"Language Brain" (AI): Not Implemented.
+Backend API: Foundational layer implemented (FastAPI, Pydantic).
+Frontend/DB/Auth: Not Implemented.
+One-sentence idea: A web app that builds a deterministic, optimized monthly payment plan across multiple credit cards, BNPL, and loans to minimize interest and fit a user's budget, honoring promo periods and due dates.
+Core Architecture ("Two-Brain" Doctrine - CRITICAL) This project follows a strict separation of concerns:
+"Math Brain" (The Optimizer): solver_engine.py
+A deterministic Python solver using Google OR-Tools (CP-SAT).
+Handles all financial calculations, optimization, and plan generation.
+Is forbidden from user interaction or data research.
+"Language Brain" (The AI Assistant): Anthropic Claude 4.5 Sonnet
+Handles user interaction, data research (e.g., min payment rules), and plan explanation.
+Is strictly forbidden from performing any financial calculations, originating monetary values, or modifying the optimizer's plan.
+Target audience: Adults 18+ with multiple credit accounts and significant balances who want a clear, automated plan to minimize interest and get out of debt. Global audience; users select country/region/currency to ground rules and formatting.
+
+🗺️ User Journey / Flow
+Onboarding: Sign up (Supabase Auth): email/password (policy enforced), MFA required, social login (Google/Apple), passkeys if available, email verification before use.
+Capture: name, country, region/state, currency. Load regional rules profile from a curated rules database.
+Add accounts (manual at launch):
+User enters lender name.
+System triggers AI-powered research agent (Language Brain) to find the lender's specific minimum payment rules for the user's country.
+Findings (e.g., "2.5% of balance plus interest, or £5, whichever is higher") are presented to the user for one-click confirmation.
+If incorrect/not found, the user can enter the rule components manually.
+User manually enters all other details: account type, current balance, account open date, promo duration (months) OR promo end date (exactly one), standard APR, and payment due day.
+Budget and preferences:
+Enter monthly budget and any future budget changes (date, new amount).
+Choose "Choice 1" (Primary Strategy):
+Minimize Total Interest
+Minimize Monthly Spend
+Pay Off ASAP with Max Budget
+Pay Off Within Promo Windows
+Minimize Spend to Clear Promos (This strategy will hide the monthly budget input)
+Choose "Choice 2" (Payment Shape):
+Linear (Same Amount Per Account)
+Optimized (Variable Amounts) (This will be forced to 'Linear' if the 'Minimize Spend to Clear Promos' strategy is chosen)
+Generate plan (deterministic): The "Math Brain" optimizer produces the full schedule: monthly payments per account, payoff dates, month-by-month balances and interest, reallocation as accounts close.
+Review and understand: A dashboard displays key metrics and a visual timeline chart shows total debt reduction.
+Adjustments and what-ifs: Allow for manual overrides and re-running the optimization.
+Ongoing use: Recompute the plan as months roll over or when user data changes.
+
+✨ Core Features (MVP)
+Auth and profile: Supabase Auth with MFA required; email/password, Google/Apple; email verification; 30-minute inactivity session timeout.
+Global setup: Country, region/state, currency selection; region-grounded rules loaded from a rules DB.
+Accounts: Manual add/edit/delete for credit cards, BNPL, and loans.
+Fields: lender, type, balance, open date, promo duration OR promo end date, standard APR, minimum payment rule, payment due day, optional notes.
+NEW: Automated Rule Discovery:
+Leverages the "Language Brain" (Claude 4.5 Sonnet) to research and retrieve lender-specific minimum payment rules.
+Includes a mandatory "human-in-the-loop" confirmation step.
+Verified rules are cached in a dedicated lender_rules database table.
+Budgets and preferences: Monthly budget, dated future changes, "Choice 1" strategy, and "Choice 2" shape.
+Deterministic Optimizer ("Math Brain") - V21 FEATURE COMPLETE:
+Tool: Google OR-Tools (CP-SAT Solver) using integer-cents modeling.
+Core Logic (Implemented):
+Handles complex MinPaymentRule dataclass (fixed, percentage, includes_interest for UK rules).
+Handles promotional (0%) APR periods via promo_end_date or promo_duration_months.
+Numerically stable (uses domain tightening for large calculations).
+"Choice 1" Strategies (All Implemented):
+MINIMIZE_TOTAL_INTEREST: Standard "avalanche" method.
+MINIMIZE_MONTHLY_SPEND: Finds the "bare minimum" plan to pay off within the 10-year (120-month) horizon.
+TARGET_MAX_BUDGET: Uses the full user budget to pay off ASAP, minimizing interest as the objective.
+PAY_OFF_IN_PROMO: Uses a soft constraint. The objective minimizes total interest plus a large penalty for any balance remaining at a promo's end.
+MINIMIZE_SPEND_TO_CLEAR_PROMOS: A special strategy that:
+Ignores the user's monthly_budget_cents.
+Applies a hard constraint to pay off all promo accounts by their end date.
+Forces the LINEAR_PER_ACCOUNT payment shape.
+The objective minimizes the peak total monthly payment required.
+Requires all accounts in the portfolio to have a promo.
+"Choice 2" Payment Shapes (All Implemented):
+OPTIMIZED_MONTH_TO_MONTH: Default variable payments, optimized monthly.
+LINEAR_PER_ACCOUNT: Forces a consistent payment amount for each account until it's paid off.
+Plan output: Per-account payments, payoff dates, month-by-month interest, totals.
+Dashboard and timeline: Live-updating cards and totals; ECharts timeline.
+Explainability and assistant: "Why this plan" narrative (from "Language Brain").
+Data management: Store user profile, accounts, budgets, schedules. Export/delete.
+Accessibility and theming: WCAG AA contrast, dyslexia- and dyscalculia-friendly modes. Dark mode.
+
+🛠️ Suggested Tools / Stack
+Frontend:
+React/Next.js (web app, responsive), TypeScript, Tailwind.
+ECharts for interactive timeline and charts.
+Backend:
+Python + FastAPI. (Implemented). A functional /generate-plan endpoint exists in main.py.
+Pydantic. (Implemented). schemas.py defines all API input/output models for validation.
+Conversion Layer. (Implemented). A helper function in main.py converts Pydantic models to the solver's dataclasses.
+Optimization:
+Google OR-Tools (CP-SAT Solver). (V21 Feature Complete). The core solver_engine.py is complete and validated. See Deterministic Optimizer feature section for a full list of implemented logic.
+Tasking/scheduling: Celery + Redis (for future async tasks).
+Data:
+PostgreSQL for persistence.
+A dedicated lender_rules table to cache verified, AI-researched minimum payment rules.
+Auth: Supabase Auth.
+AI Assistant ("Language Brain"):
+Anthropic Claude 4.5 Sonnet. Used for three functions:
+The "Automated Rule Discovery" feature.
+Generating the "Why this plan" narrative.
+Orchestrating what-if scenarios for the conversational assistant.
+Hard rule: Never generates monetary values.
+Security/ops:
+TLS everywhere, field-level encryption for PII/financials, audit logs.
+
+🚀 Replit Deployment & Operations
+Dependency Management:
+A pyproject.toml (using Poetry) or requirements.txt file is required.
+Key dependencies: fastapi, uvicorn, pydantic, python-dateutil, ortools.
+Running the Application:
+The FastAPI app is launched via the Uvicorn command in the Replit shell: uvicorn main:app --host 0.0.0.0 --port 8080.
+Secrets Management:
+All credentials (Supabase keys, database URLs, Claude API key) must be stored using Replit's built-in Secrets manager (as environment variables).
+Potential Limitations & Risks:
+Solver Performance: The CP-SAT solver can be memory and CPU-intensive. Complex portfolios (e.g., 10+ accounts, 120-month horizon) may hit Replit's container resource limits. The solver's max_time_in_seconds is currently set to 60s to mitigate this, but infeasible or complex models may time out.
+OR-Tools Installation: The ortools package is a large binary. Initial installation on Replit container startup may be slow.
+Statelessness: The current API endpoint is stateless. For the full application, a persistent PostgreSQL database (e.g., from Supabase or another provider) will be required to store all user data.
+

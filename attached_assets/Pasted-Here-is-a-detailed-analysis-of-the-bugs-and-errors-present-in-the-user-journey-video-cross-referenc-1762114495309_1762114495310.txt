@@ -1,0 +1,177 @@
+Here is a detailed analysis of the bugs and errors present in the user journey video, cross-referenced with the provided source code and console logs.
+
+### High-Level Summary of Issues
+
+Based on the video and error logs, the application is suffering from two critical, distinct bugs that prevent core functionality.
+
+1.  **Bug 1: Authentication Race Condition (The "Double Login")**
+
+      * **Symptom:** The user must log in twice. The first attempt fails and redirects back to the login page. The second attempt succeeds.
+      * **Root Cause:** This is a classic session race condition. The Node.js server successfully authenticates the user and sends the session cookie, but the frontend redirects to the dashboard *so quickly* that the browser hasn't processed the new cookie before the *next* request (to `/api/auth/me`) is sent. This request fails with a `401 Unauthorized`, which the frontend interprets as a logout, forcing the user back to the login page.
+
+2.  **Bug 2: Data Mismatch on Plan Generation (The "Budget Reduction" Error)**
+
+      * **Symptom:** Plan generation fails with a `400 Bad Request` when "Future Changes" are present in the budget. The user correctly identified this happens when a budget *reduction* is included, but the technical cause is more specific.
+      * **Root Cause:** The backend has a critical data mapping error. The `client/src/pages/generate.tsx` page correctly sends the `futureChanges` data as an **array of tuples** (e.g., `[["2026-12-12", 50000]]`). However, the API endpoint handler in `server/routes.ts` (at line 535) incorrectly tries to read this as an **array of objects** (e.g., `change.effectiveDate`). This results in `[undefined, undefined]` being sent to the Python "Math Brain," which receives `[null, null]`, causing its Pydantic validator to fail with the exact `Value error, Amount must be an integer (in cents), got: None` seen in the video.
+
+3.  **Bug 3: Frontend Data Handling Error (The `budget.tsx` Crash)**
+
+      * **Symptom:** A related error, visible in screenshot `Screenshot 2025-11-02 at 19.55.17.png`, shows the `/budget` page crashing with `TypeError: object is not iterable (cannot read property Symbol.iterator)`.
+      * **Root Cause:** This indicates that the `futureChanges` or `lumpSumPayments` data coming from the `/api/budget` endpoint is sometimes not an array (it might be `null` or a malformed object). The frontend code in `client/src/pages/budget.tsx` (line 92) does not safely handle this case and fails when it tries to call `.map()` on a non-array.
+
+-----
+
+### Bug 1: Detailed Analysis (Double Login)
+
+  * **Symptom:**
+
+    1.  (Video `00:02`) User is at `/login`. Console shows a `401` for `/api/auth/me`. This is the correct initial state.
+    2.  (Video `00:08`) User logs in.
+    3.  (Video `00:09`) The app redirects, but the console immediately shows another `Failed to load resource: ... /api/auth/me ... status of 401 ()`.
+    4.  Because the `/api/auth/me` check fails, the `useAuth` hook sets the user to `null`, and the `HomeRoute` in `App.tsx` redirects back to `/login`.
+    5.  (Video `00:12`) The user clicks "Sign in" a second time.
+    6.  (Video `00:13`) This time, the session cookie exists, the redirect to `/` is successful, and all subsequent data loads (for dashboard, accounts) succeed.
+
+  * **Technical Root Cause:**
+    This is a race condition between the client and server session handling.
+
+    1.  **Server (`server/routes.ts`, line 151):** The login handler *correctly* uses `req.session.save()` to ensure the session is written before responding.
+    2.  **Client (`client/src/lib/auth-context.tsx`, line 49):** The `login` function successfully receives the user data and calls `setUser(userData)`.
+    3.  **Client (`client/src/pages/login.tsx`, line 35):** The page redirects to `/dashboard` (which routes to `/`).
+    4.  **Client (`client/src/App.tsx`, line 33):** The `HomeRoute` component renders. `useAuth()` shows a valid `user` (from step 2), so it renders `<HomePageWrapper />`.
+    5.  **Client (`client/src/pages/home-wrapper.tsx`, line 10):** This wrapper *immediately* calls `useAccounts()` and `useActivePlan()`.
+    6.  **Client (`client/src/lib/queryClient.ts`, line 42):** These hooks trigger `getQueryFn`, which makes `fetch` requests to `/api/accounts` and `/api/plans/latest`.
+    7.  **The Race:** These `fetch` requests happen milliseconds after the login `POST`. The browser has not yet reliably processed the `Set-Cookie` header from the login response. These new `GET` requests are sent *without* the session cookie.
+    8.  **Server (`server/auth.ts`, line 101):** The `requireAuth` middleware checks for `req.isAuthenticated()`, which fails. The server correctly returns a `401 Unauthorized` for `/api/accounts` and `/api/plans/latest`.
+    9.  **The `401` error from `useQuery` is not handled gracefully.** It propagates as an error, but the *real* issue is seen in the screenshot `Screenshot 2025-11-01 at 21.50.54.png`: **"Failed to deserialize user object."** This indicates a deeper failure in `passport.deserializeUser` (`server/auth.ts`, line 84), where the session data is corrupted or unavailable on the first attempt.
+
+  * **Recommended Next Steps:**
+
+    1.  **Strengthen `deserializeUser`:** The `deserializeUser` function in `server/auth.ts` (line 84) is failing. Add more robust error handling and logging to pinpoint *why*.
+    2.  **Ensure Session Store Stability:** `memorystore` is fine for development, but this behavior suggests it's not persisting immediately. A more robust solution is `connect-pg-simple` (which is already in your `package.json`\!) to store sessions directly in your PostgreSQL database. This will guarantee session persistence across requests.
+
+-----
+
+### Bug 2: Detailed Analysis (Plan Generation Failure)
+
+  * **Symptom:**
+
+    1.  (Video `00:24`) User navigates to `/budget` and views "Future Changes," which includes a reduction to `£500`.
+    2.  (Video `00:39`) User clicks "Generate My Plan".
+    3.  (Video `00:41`) Generation fails with a `400 Bad Request`.
+    4.  (Video `00:50`) The error message clearly states: `Value error, Amount must be an integer (in cents), got: None` and the failing location is `body.budget.future_changes[0][1]` (the amount of the first future change).
+
+  * **Technical Root Cause:**
+    This is a clear data-mapping error in `server/routes.ts`. The data is being corrupted when passed from the Node.js backend to the Python backend.
+
+    1.  **Client (`client/src/pages/budget.tsx`, line 206):** Correctly prepares `futureChanges` as an **array of tuples**: `[["2026-05-05", 75000], ["2026-12-12", 50000]]`.
+    2.  **Client (`client/src/pages/generate.tsx`, line 45):** This page correctly fetches the budget data (which includes the tuple array) and sends it, untouched, to `/api/plans/generate`.
+    3.  **Server (`server/routes.ts`, line 535):** **This is the bug.** The code receives the array of tuples but incorrectly tries to map it as if it were an array of *objects*:
+        ```typescript
+        // CURRENT BUGGY CODE in server/routes.ts
+        future_changes: (budget.futureChanges || []).map((change: any) => [
+          change.effectiveDate, // 'change' is ["2026-05-05", 75000]. 
+                                // 'change.effectiveDate' is undefined.
+          change.newMonthlyBudgetCents // 'change.newMonthlyBudgetCents' is undefined.
+        ]),
+        ```
+    4.  **Result:** The code sends `[[undefined, undefined], [undefined, undefined]]` to the Python API.
+    5.  **Python (`schemas.py`, line 83):** The Pydantic model receives `[[null, null], [null, null]]`. The validator `check_amounts_valid` checks `if amount is None:` and correctly throws the `Value error, Amount must be an integer (in cents), got: None`.
+
+  * **Recommended Fix (Bug 2):**
+    Modify `server/routes.ts` (line 535) to correctly map the tuple:
+
+    ```typescript
+    // In server/routes.ts, inside the /api/plans/generate handler:
+
+    // --- FIX ---
+    // Python expects List[Tuple[date, int]]
+    // The 'budget.futureChanges' object IS ALREADY in this format.
+    // No mapping is required.
+    future_changes: budget.futureChanges || [],
+
+    // Also fix lump_sum_payments (which has the same bug):
+    lump_sum_payments: budget.lumpSumPayments || [],
+
+    // --- INSTEAD OF ---
+    /*
+    // OLD BUGGY CODE:
+    future_changes: (budget.futureChanges || []).map((change: any) => [
+      change.effectiveDate,
+      change.newMonthlyBudgetCents
+    ]),
+    lump_sum_payments: (budget.lumpSumPayments || []).map((payment: any) => [
+      payment.paymentDate,
+      payment.amountCents
+    ]),
+    */
+    ```
+
+    Additionally, the Pydantic validator in `schemas.py` (line 89) has a logic bug that *would* have caused a problem if the data *had* arrived. It blocks positive numbers that are reductions.
+
+    ```python
+    # In schemas.py, inside check_amounts_valid:
+
+    # ...
+    if amount is None:
+        raise ValueError(f"Item {i+1}: Amount must be an integer (in cents), got: None")
+    if not isinstance(amount, int):
+        raise ValueError(f"Item {i+1}: Amount must be an integer (in cents), got type: {type(amount).__name__}, value: {amount}")
+
+    # --- FIX ---
+    # The amount is the NEW ABSOLUTE budget, which must be positive.
+    # The old check 'if amount <= 0:' was correct, but the error message was wrong
+    # and confused the user's intent. The user MUST be able to enter a
+    # new absolute budget that is *lower* than the previous one (a reduction).
+    # The logic was correct, but the error message was misleading.
+    # Let's clean up the validation:
+    if amount <= 0:
+        raise ValueError(f"Item {i+1}: New budget amount must be a positive number. Got: {amount}")
+    ```
+
+    The primary fix is in `server/routes.ts`. The `schemas.py` fix is for clarity.
+
+-----
+
+### Bug 3: Detailed Analysis (`TypeError` on Budget Page)
+
+  * **Symptom:** Screenshot `19.55.17.png` shows `TypeError: object is not iterable (cannot read property Symbol.iterator)` in `budget.tsx` on line 98.
+
+  * **Technical Root Cause:** This error occurs when `(existingBudget.futureChanges || []).map(...)` is called, but `existingBudget.futureChanges` is not `null`, `undefined`, or an array. It is likely a plain object `{}`.
+
+  * **Recommended Fix (Bug 3):**
+    Strengthen the `sanitizeBudgetData` helper in `server/routes.ts` to *guarantee* `futureChanges` and `lumpSumPayments` are always arrays.
+
+    ```typescript
+    // In server/routes.ts, around line 391:
+
+    const sanitizeBudgetData = (data: any) => {
+      const sanitized = { ...data };
+      
+      // --- FIX ---
+      // Ensure futureChanges is always an array before filtering
+      if (!Array.isArray(sanitized.futureChanges)) {
+        sanitized.futureChanges = [];
+      }
+      sanitized.futureChanges = sanitized.futureChanges.filter((item: any) => {
+        if (!Array.isArray(item) || item.length !== 2) return false;
+        const [date, amount] = item;
+        return date != null && amount != null && typeof amount === 'number' && amount > 0;
+      });
+      
+      // --- FIX ---
+      // Ensure lumpSumPayments is always an array before filtering
+      if (!Array.isArray(sanitized.lumpSumPayments)) {
+        sanitized.lumpSumPayments = [];
+      }
+      sanitized.lumpSumPayments = sanitized.lumpSumPayments.filter((item: any) => {
+        if (!Array.isArray(item) || item.length !== 2) return false;
+        const [date, amount] = item;
+        return date != null && amount != null && typeof amount === 'number' && amount > 0;
+      });
+      
+      return sanitized;
+    };
+    ```
+
+    This fix will prevent the frontend from crashing on the `/budget` page if the database contains malformed or `null` data for these fields.

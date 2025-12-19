@@ -1,0 +1,341 @@
+Role and Goal:
+
+You are a Senior Backend Developer for "Paydown Pilot," a global fintech web application. Your task is to implement the complete, hybrid-assisted account onboarding process.
+
+This is the most complex part of our application and involves three systems working in concert: Plaid (for data fetching), Anthropic's Claude 4.5 Sonnet (as a "Language Brain" for AI research), and our Frontend (for user verification).
+
+You must implement all the backend components—API endpoints, database models, and AI prompt logic—to make this flow a reality.
+
+Architectural Doctrine (CRITICAL PRINCIPLE): The "Two-Brain" System
+
+You must adhere to our non-negotiable "Two-Brain" architecture:
+
+The "Math Brain" (Google OR-Tools): This is a separate, deterministic solver. It only receives 100% verified, structured data. We are not building this right now, but we are building the system that feeds it.
+
+The "Language Brain" (Claude 4.5 Sonnet): This is our AI assistant. Its role is strictly limited to language and research. It is forbidden from performing financial calculations or generating monetary values. You will be implementing one of its key functions: the "Research Team."
+
+The Hybrid Onboarding Flow: The Full User Journey
+
+This is the exact user journey you are building the backend for:
+
+User Choice: The user clicks "Add Account" and is given two choices: [Connect Bank (Fastest)] or [Enter Manually]. The user clicks "Connect Bank."
+
+Plaid Connect: The frontend calls your create_link_token endpoint. The Plaid Link modal opens. The user logs into their bank.
+
+Token Exchange: The frontend receives a public_token and sends it to your exchange_public_token endpoint.
+
+Data Fetch: Your backend exchanges the token, gets a permanent access_token, saves it, and immediately calls Plaid's /liabilities/get API.
+
+Triage: Your backend returns the list of Plaid-found accounts (e.g., "Chase Sapphire," "Amex Gold") to the frontend.
+
+The Hybrid Form: The user clicks on "Chase Sapphire" to add it. The frontend loads our "Add Account" form, but pre-fills it with Plaid's data (Lender Name, Total Balance, Due Day).
+
+The AI "Research Team" (Simultaneous): As the form loads, the frontend also calls your research_payment_rule endpoint, sending { "lender_name": "Chase", "country_code": "USA" }.
+
+AI at Work: Your backend checks its cache. If not found, it calls the "Language Brain" (Claude 4.5) with a specific prompt, instructing it to find Chase's minimum payment rule in the USA.
+
+Human-in-the-Loop: The AI returns a structured JSON object (e.g., {"percent": 2.5, "fixed_cents": 2500, ...}). Your backend sends this to the frontend.
+
+User Verification: The user sees the AI's finding: "We found the rule is '2.5% of balance or $25'. Is this correct?" The user clicks "Confirm."
+
+Final Step (The "Prorate" Flow): The user is now on a form that is 80% complete. They just have to:
+
+Manually enter the APRs and promo dates (which Plaid cannot get).
+
+Complete the "Prorate" flow (enter Statement_Buckets to match the Total_Balance).
+
+Submit: The user submits the final, fully-verified data, which is then sent to the reconcile-balances endpoint (the other task you were briefed on) to be saved.
+
+Your Implementation Task
+You are to generate all the Python code (using FastAPI and Pydantic) for the backend endpoints and database models required for this flow.
+
+1. Database Models (Pydantic / SQLModel)
+First, define the two new database table schemas we need.
+
+Python
+
+from pydantic import BaseModel, Field
+from uuid import UUID, uuid4
+from datetime import datetime
+
+class UserPlaidItem(BaseModel):
+    """
+    Stores the permanent, encrypted credentials for a Plaid Item.
+    """
+    id: UUID = Field(default_factory=uuid4)
+    user_id: UUID = Field(..., index=True)
+    item_id: str = Field(..., description="Plaid's unique ID for the Item")
+    access_token_encrypted: bytes = Field(..., 
+                                     description="The Plaid access_token, encrypted (e.g., with Fernet)")
+    last_synced_at: Optional[datetime] = None
+
+class LenderRuleCache(BaseModel):
+    """
+    Caches AI-researched, user-verified minimum payment rules.
+    """
+    id: UUID = Field(default_factory=uuid4)
+    country_code: str = Field(..., index=True, description="e.g., 'USA', 'GBR'")
+    lender_name_key: str = Field(..., 
+                               index=True, 
+                               description="A normalized key, e.g., 'chasebank'")
+    min_payment_percentage_bp: int = Field(..., 
+                                        description="Min payment % in basis points (e.g., 250 for 2.5%)")
+    min_payment_fixed_cents: int = Field(..., 
+                                         description="Min payment fixed amount in cents (e.g., 2500 for $25)")
+    includes_interest: bool = Field(..., 
+                                    description="True if the % calc is on (balance + interest)")
+    verified_at: datetime = Field(default_factory=datetime.utcnow)
+2. Plaid API Endpoints (FastAPI)
+Next, create the two endpoints for handling the Plaid connection. Mock any Plaid SDK/API calls.
+
+Python
+
+from fastapi import APIRouter, HTTPException, Body, Depends
+from typing import List, Any
+import os
+
+# --- MOCKS (for this exercise) ---
+# Assume these Pydantic models exist
+class PlaidLiability(BaseModel):
+    name: str
+    account_id: str
+    balance: int
+    due_day: int
+    
+class PlaidAccountListResponse(BaseModel):
+    accounts: List[PlaidLiability]
+
+# Assume a mock Plaid client
+class MockPlaidClient:
+    def link_token_create(self, *args, **kwargs):
+        return {"link_token": "mock-link-token-12345"}
+    
+    def item_public_token_exchange(self, public_token: str):
+        return {"access_token": f"mock-access-for-{public_token}", "item_id": "mock-item-id-123"}
+        
+    def liabilities_get(self, access_token: str):
+        return {
+            "liabilities": {
+                "accounts": [
+                    {"name": "Chase Sapphire", "account_id": "acc1", "balance": 150000, "due_day": 15},
+                    {"name": "Amex Gold", "account_id": "acc2", "balance": 250000, "due_day": 20},
+                ]
+            }
+        }
+
+plaid_client = MockPlaidClient()
+# Assume a mock DB and encryption
+def get_current_user_id() -> UUID: return uuid4() # Mock auth dependency
+def encrypt_token(token: str) -> bytes: return token.encode('utf-8')
+def save_item_to_db(item: UserPlaidItem): print(f"Saving {item.item_id} to DB")
+# --- END MOCKS ---
+
+router = APIRouter()
+
+@router.post(
+    "/api/v1/plaid/create_link_token",
+    response_model=dict,
+    summary="Create a Plaid Link Token"
+)
+async def create_link_token(user_id: UUID = Depends(get_current_user_id)):
+    """
+    Creates a new, one-time link_token for the frontend
+    to initialize the Plaid Link modal.
+    """
+    try:
+        # We pass user_id to Plaid for security/tracking
+        plaid_request = {
+            "user": {"client_user_id": str(user_id)},
+            "client_name": "Paydown Pilot",
+            "products": ["liabilities"],
+            "country_codes": ["US", "GB", "CA"], # G7 supported countries
+            "language": "en",
+        }
+        response = plaid_client.link_token_create(plaid_request)
+        return {"link_token": response['link_token']}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Plaid API error: {e}")
+
+@router.post(
+    "/api/v1/plaid/exchange_public_token",
+    response_model=PlaidAccountListResponse,
+    summary="Exchange public token and fetch liabilities"
+)
+async def exchange_public_token(
+    public_token: str = Body(..., embed=True),
+    user_id: UUID = Depends(get_current_user_id)
+):
+    """
+    1. Exchanges a public_token for an access_token.
+    2. Saves the new item (encrypted) to the DB.
+    3. Immediately fetches and returns the user's liability accounts.
+    """
+    try:
+        # 1. Exchange Token
+        exchange_response = plaid_client.item_public_token_exchange(public_token)
+        access_token = exchange_response['access_token']
+        item_id = exchange_response['item_id']
+
+        # 2. Save to DB
+        new_item = UserPlaidItem(
+            user_id=user_id,
+            item_id=item_id,
+            access_token_encrypted=encrypt_token(access_token)
+        )
+        save_item_to_db(new_item) # Mock DB save
+
+        # 3. Fetch Liabilities
+        liabilities_response = plaid_client.liabilities_get(access_token)
+        
+        # 4. Transform and Return
+        accounts = [
+            PlaidLiability(
+                name=acc['name'],
+                account_id=acc['account_id'],
+                balance=acc['balance'],
+                due_day=acc['due_day']
+            )
+            for acc in liabilities_response['liabilities']['accounts']
+        ]
+        return PlaidAccountListResponse(accounts=accounts)
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Plaid exchange/fetch error: {e}")
+
+3. AI "Language Brain" Endpoints (The Core AI Task)
+Finally, create the endpoints for the "Research Team." This is the most important part. You must:
+
+Define the structured Pydantic models the AI must return.
+
+Write the Master System Prompt for Claude 4.5 Sonnet.
+
+Write the endpoint that orchestrates the cache-check and the AI call.
+
+Write the simple endpoint for confirming and saving the rule.
+
+Python
+
+# --- Pydantic models for the AI ---
+
+class MinPaymentRule(BaseModel):
+    """
+    The STRICT JSON structure the AI must return.
+    This defines a lender's minimum payment rule.
+    """
+    min_payment_percentage_bp: int = Field(..., 
+                                        description="Min payment % in basis points (e.g., 250 for 2.5%)")
+    min_payment_fixed_cents: int = Field(..., 
+                                         description="Min payment fixed amount in cents (e.g., 2500 for $25)")
+    includes_interest: bool = Field(..., 
+                                    description="True if the % calc is on (balance + interest)")
+    rule_summary: str = Field(...,
+                              description="A plain-language summary of the rule, e.g., '2.5% of balance + interest, or $25, whichever is greater'")
+
+class ResearchRuleRequest(BaseModel):
+    lender_name: str
+    country_code: str # e.g., "GBR"
+
+# --- AI Master Prompt ---
+
+AI_SYSTEM_PROMPT = """
+You are the "Research Team," an AI assistant for a fintech app called Paydown Pilot. Your *only* job is to research and extract structured data on credit card minimum payment rules.
+
+CRITICAL RULES:
+1.  You are a researcher. You are *forbidden* from giving financial advice, performing calculations, or generating any monetary values that are not part of a quoted rule.
+2.  Your *only* output format is a single, valid JSON object matching the user's requested schema. Do not output any other text, greetings, or explanations.
+3.  The user will provide a lender name and country. You must find the most common *standard* minimum payment rule for that lender's credit cards in that country.
+4.  `min_payment_percentage_bp`: Must be in basis points (e.g., 2.5% = 250).
+5.  `min_payment_fixed_cents`: Must be in cents (e.g., $25 = 2500, £5 = 500).
+6.  `includes_interest`: This is the most critical field.
+    * Set to `false` for US/CA rules (e.g., "X% of statement balance").
+    * Set to `true` for UK rules (e.g., "X% of balance + interest + fees"). This is a key regional difference.
+7.  `rule_summary`: Write a one-sentence summary (e.g., "2.5% of (balance + interest), or £5, whichever is higher.")
+8.  If you cannot find a reliable rule, return a default rule of 1% and $10, and set the summary to "Could not be verified."
+"""
+
+# --- MOCKS (for this exercise) ---
+# Assume a mock Claude client
+class MockAnthropicClient:
+    def messages_create(self, system: str, messages: List[dict], max_tokens: int, model: str, response_schema: BaseModel):
+        # The client would use the schema to force JSON output
+        # Here we just return a mock response based on the user input
+        user_content = messages[0]["content"]
+        if "Chase" in user_content:
+            return MinPaymentRule(
+                min_payment_percentage_bp=200,
+                min_payment_fixed_cents=2500,
+                includes_interest=False,
+                rule_summary="2.0% of statement balance, or $25, whichever is greater."
+            )
+        else: # Default for UK
+             return MinPaymentRule(
+                min_payment_percentage_bp=250,
+                min_payment_fixed_cents=500,
+                includes_interest=True,
+                rule_summary="2.5% of (balance + interest), or £5, whichever is higher."
+            )
+
+anthropic_client = MockAnthropicClient()
+def normalize_key(name: str) -> str: return name.lower().replace(" ", "")
+def check_cache_for_rule(key: str, country: str) -> Optional[MinPaymentRule]: return None # Mock DB cache miss
+def save_rule_to_cache(key: str, country: str, rule: MinPaymentRule): print("Saving rule to cache...")
+# --- END MOCKS ---
+
+@router.post(
+    "/api/v1/research/rule",
+    response_model=MinPaymentRule,
+    summary="AI research for a lender's min payment rule"
+)
+async def research_payment_rule(request: ResearchRuleRequest = Body(...)):
+    """
+    Orchestrates the 'Language Brain' (AI) to find a lender's
+    minimum payment rule.
+    
+    1. Checks a local cache for a pre-verified rule.
+    2. If not found, triggers the Claude 4.5 Sonnet AI
+       to research the rule and return it as structured JSON.
+    """
+    key = normalize_key(request.lender_name)
+    
+    # 1. Check cache
+    cached_rule = check_cache_for_rule(key, request.country_code)
+    if cached_rule:
+        return cached_rule
+
+    # 2. If not found, call AI
+    try:
+        user_prompt = f"Find the minimum payment rule for '{request.lender_name}' in country '{request.country_code}'."
+        
+        # This (mocked) call uses Anthropic's "Tool Use" / JSON output feature
+        ai_response_rule = anthropic_client.messages_create(
+            system=AI_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": user_prompt}],
+            max_tokens=1024,
+            model="claude-4.5-sonnet-20240812", # Our target model
+            response_schema=MinPaymentRule # Force JSON output
+        )
+        
+        return ai_response_rule
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"AI research failed: {e}")
+
+@router.post(
+    "/api/v1/research/confirm-rule",
+    status_code=204,
+    summary="Saves a user-verified rule to the cache"
+)
+async def confirm_payment_rule(
+    rule: MinPaymentRule = Body(...),
+    lender_name: str = Body(...),
+    country_code: str = Body(...)
+):
+    """
+    The 'Human-in-the-Loop' endpoint.
+    When a user confirms an AI-found rule is correct,
+    the frontend calls this endpoint to save it to our
+    cache for future use.
+    """
+    key = normalize_key(lender_name)
+    save_rule_to_cache(key, country_code, rule)
+    return
