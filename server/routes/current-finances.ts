@@ -58,11 +58,9 @@ export interface EnrichedTransactionDetail {
   entryType: string;
   ukCategory: string | null;
   budgetCategory: string | null;
-  masterCategory: string | null;
   transactionDate: string | null;
   isRecurring: boolean | null;
   recurrenceFrequency: string | null;
-  isSubscription: boolean | null;
 }
 
 export interface CategoryBreakdown {
@@ -300,11 +298,9 @@ export function registerCurrentFinancesRoutes(app: Express): void {
         entryType: tx.entryType,
         ukCategory: tx.ukCategory,
         budgetCategory: tx.budgetCategory,
-        masterCategory: tx.masterCategory,
         transactionDate: tx.transactionDate,
         isRecurring: tx.isRecurring,
         recurrenceFrequency: tx.recurrenceFrequency,
-        isSubscription: tx.isSubscription,
       }));
 
       const categoryBreakdown = buildCategoryBreakdown(transactions);

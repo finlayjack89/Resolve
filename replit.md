@@ -21,9 +21,6 @@ Preferred communication style: Simple, everyday language.
 - **Ntropy Transaction Enrichment**: Enriches bank transactions with merchant data, categorization, and recurring payment detection via Ntropy SDK.
 - **Transaction Reconciliation**: Detects and excludes inter-account transfers (same amount within 2 days, opposite directions) and refunds/reversals (keyword matching + merchant/amount/date fuzzy matching) from budget calculations.
 - **AI Research System**: Claude Sonnet 4.5 for automated lender rule discovery with human verification and intelligent caching.
-- **Subscription Detective (Phase 2)**: LangGraph agent that classifies transactions as subscriptions using Serper web search and a local catalog. Endpoints: POST /classify-subscription.
-- **Email Integration (Phase 3)**: Nylas v3 SDK for OAuth flow, receipt email fetching, and Claude-powered receipt parsing. Endpoints: /api/email/status, /auth-url, /callback, /fetch-receipts, /parse-receipt.
-- **Context Hunter**: Fuzzy matching system that links bank transactions to email receipts using merchant name similarity (40%), amount matching (35%), and date proximity (25%). Endpoint: POST /api/email/match-receipts.
 - **Python Backend Integration**: FastAPI runs as a child process of the Node.js server, utilizing Google OR-Tools CP-SAT solver. Includes health checks, retry logic, and auto-restart.
 
 ### Data Storage

@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, integer, date, jsonb, timestamp, boolean, unique, real } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, integer, date, jsonb, timestamp, boolean, unique } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -175,45 +175,6 @@ export const lenderProducts = pgTable("lender_products", {
   lenderProductCountryUnique: unique().on(table.lenderName, table.productName, table.country),
 }));
 
-// Subscription Catalog - Master list of known subscription products for intelligent detection
-export const subscriptionCatalog = pgTable("subscription_catalog", {
-  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  merchantName: text("merchant_name").notNull(),
-  productName: text("product_name").notNull(),
-  amountCents: integer("amount_cents"), // Stored in cents for precision
-  currency: text("currency").default("GBP"),
-  recurrencePeriod: text("recurrence_period"), // "Monthly", "Annual", "Weekly"
-  subscriptionType: text("subscription_type"), // "Subscription", "Utility", etc.
-  category: text("category"), // "Entertainment", "Health", "Transport", etc.
-  isVerified: boolean("is_verified").default(false), // TRUE if verified by human or high-confidence AI
-  createdAt: timestamp("created_at").defaultNow(),
-  updatedAt: timestamp("updated_at").defaultNow(),
-}, (table) => ({
-  merchantProductUnique: unique().on(table.merchantName, table.productName, table.amountCents),
-}));
-
-// Reasoning Trace Interface - Stores the "Why" for AI categorization
-export interface ReasoningTrace {
-  steps: Array<{
-    step: string; // e.g., "Bank Data", "Subscription Check", "Category Mapping"
-    detail: string; // e.g., "Matched Netflix £12.99 to Standard plan"
-    confidence?: number;
-  }>;
-  finalCategory: string;
-  finalConfidence: number;
-  timestamp: string;
-}
-
-// Context Data Interface - Stores external enrichment data
-export interface ContextData {
-  eventName?: string; // "Taylor Swift Concert"
-  routeStart?: string; // "Euston"
-  routeEnd?: string; // "Wembley Stadium"
-  itemsPurchased?: string[];
-  receiptFound?: boolean;
-  sourceType?: "email" | "calendar" | "macro_event";
-}
-
 // TrueLayer Integration Tables - Supports multiple bank accounts per user
 export const trueLayerItems = pgTable("truelayer_items", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -260,56 +221,16 @@ export const enrichedTransactions = pgTable("enriched_transactions", {
   entryType: text("entry_type").notNull(), // 'incoming' or 'outgoing'
   budgetCategory: text("budget_category"), // 'debt', 'fixed', 'discretionary'
   ukCategory: text("uk_category"), // UK-specific category mapping (employment, utilities, subscriptions, etc.)
-  masterCategory: text("master_category"), // PRD Master Taxonomy: bills_utilities, subscriptions, transport, etc.
   transactionDate: date("transaction_date").notNull(),
   currency: text("currency").default("GBP"),
   // Reconciliation fields for transfer/refund detection
   transactionType: text("transaction_type").default("regular"), // 'regular', 'transfer', 'refund', 'reversal'
   linkedTransactionId: varchar("linked_transaction_id"), // Links refund to original expense, or transfer to counterpart
   excludeFromAnalysis: boolean("exclude_from_analysis").default(false), // True for transfers/reversals that shouldn't count
-  // Subscription Detection fields (PRD Module A)
-  isSubscription: boolean("is_subscription").default(false), // TRUE if matched to subscription catalog
-  subscriptionId: varchar("subscription_id").references(() => subscriptionCatalog.id), // Links to subscription_catalog
-  // AI Reasoning fields (PRD - Reasoning Traces)
-  reasoningTrace: jsonb("reasoning_trace").$type<ReasoningTrace>(), // Stores the "Why" for categorization
-  contextData: jsonb("context_data").$type<ContextData>(), // Stores external enrichment (email, events)
-  aiConfidenceScore: real("ai_confidence_score"), // 0.0 to 1.0 confidence in categorization
-  // User Correction tracking
-  userCorrectedCategory: text("user_corrected_category"), // If user overrode the AI category
   createdAt: timestamp("created_at").defaultNow(),
 }, (table) => ({
   userTransactionUnique: unique().on(table.userId, table.trueLayerTransactionId),
 }));
-
-// Email Connections - Stores Nylas OAuth grants/tokens for email access
-export const emailConnections = pgTable("email_connections", {
-  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
-  provider: varchar("provider").notNull().default("nylas"), // e.g., "nylas"
-  grantId: varchar("grant_id").notNull(), // Nylas grant ID
-  email: varchar("email").notNull(),
-  accessToken: text("access_token").notNull(), // Encrypted
-  refreshToken: text("refresh_token"), // Optional, encrypted
-  lastSyncAt: timestamp("last_sync_at"),
-  createdAt: timestamp("created_at").defaultNow(),
-});
-
-// Email Receipts - Stores parsed receipt emails for transaction matching
-export const emailReceipts = pgTable("email_receipts", {
-  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  connectionId: varchar("connection_id").notNull().references(() => emailConnections.id, { onDelete: "cascade" }),
-  nylasMessageId: varchar("nylas_message_id").notNull().unique(),
-  senderEmail: varchar("sender_email"),
-  subject: varchar("subject"),
-  receivedAt: timestamp("received_at"),
-  merchantName: varchar("merchant_name"), // Extracted from receipt
-  amountCents: integer("amount_cents"), // Extracted from receipt
-  currency: varchar("currency"), // Extracted from receipt
-  rawBody: text("raw_body"),
-  parsedData: jsonb("parsed_data").$type<Record<string, any>>(), // Full extraction
-  matchedTransactionId: varchar("matched_transaction_id"), // Links to enriched_transactions
-  createdAt: timestamp("created_at").defaultNow(),
-});
 
 // TypeScript Types
 export type User = typeof users.$inferSelect;
@@ -336,20 +257,11 @@ export type InsertLenderRule = typeof lenderRules.$inferInsert;
 export type LenderProduct = typeof lenderProducts.$inferSelect;
 export type InsertLenderProduct = typeof lenderProducts.$inferInsert;
 
-export type SubscriptionCatalog = typeof subscriptionCatalog.$inferSelect;
-export type InsertSubscriptionCatalog = typeof subscriptionCatalog.$inferInsert;
-
 export type TrueLayerItem = typeof trueLayerItems.$inferSelect;
 export type InsertTrueLayerItem = typeof trueLayerItems.$inferInsert;
 
 export type EnrichedTransaction = typeof enrichedTransactions.$inferSelect;
 export type InsertEnrichedTransaction = typeof enrichedTransactions.$inferInsert;
-
-export type EmailConnection = typeof emailConnections.$inferSelect;
-export type InsertEmailConnection = typeof emailConnections.$inferInsert;
-
-export type EmailReceipt = typeof emailReceipts.$inferSelect;
-export type InsertEmailReceipt = typeof emailReceipts.$inferInsert;
 
 // API Request/Response Types
 export interface MinPaymentRule {
