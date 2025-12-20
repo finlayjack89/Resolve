@@ -1,6 +1,6 @@
 # enrichment_service.py - Ntropy Transaction Enrichment Service
 # Handles TrueLayer → Ntropy → Budget Classification pipeline
-# Version: 1.2 - With concurrent processing and streaming support
+# Version: 1.3 - With parallel agentic enrichment and streaming support
 
 import os
 import hashlib
@@ -9,6 +9,21 @@ from typing import List, Dict, Any, Optional, AsyncGenerator, Callable
 from pydantic import BaseModel, Field
 from concurrent.futures import ThreadPoolExecutor
 import time
+
+# Import parallel agentic enrichment components
+try:
+    from agents.parallel_enrichment import (
+        AgenticEnrichmentQueue,
+        EnrichmentProgress,
+        EnrichmentStage,
+        needs_agentic_enrichment,
+        get_agentic_queue
+    )
+    AGENTIC_ENRICHMENT_AVAILABLE = True
+    print("[EnrichmentService] Agentic enrichment module loaded successfully")
+except ImportError as e:
+    AGENTIC_ENRICHMENT_AVAILABLE = False
+    print(f"[EnrichmentService] Warning: Agentic enrichment not available ({e})")
 
 # Ntropy SDK import
 NTROPY_AVAILABLE = False
@@ -294,11 +309,16 @@ class EnrichmentService:
         truelayer_item_id: str,
         account_holder_name: Optional[str] = None,
         country: str = "GB",
-        progress_callback: Optional[Callable[[int, int, str], None]] = None
+        progress_callback: Optional[Callable[[int, int, str], None]] = None,
+        enable_agentic_enrichment: bool = True,
+        nylas_grant_id: Optional[str] = None
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Stream enrichment progress with real-time updates.
         Yields progress events and final result.
+        
+        Now includes parallel agentic enrichment that runs concurrently with Ntropy.
+        Transactions that need deeper analysis are immediately queued for AI processing.
         
         Args:
             raw_transactions: List of raw TrueLayer transaction dicts
@@ -307,16 +327,41 @@ class EnrichmentService:
             account_holder_name: Optional name for Ntropy account holder
             country: Country code for account holder (default: GB)
             progress_callback: Optional callback(current, total, status)
+            enable_agentic_enrichment: Whether to run parallel agentic enrichment
+            nylas_grant_id: Optional Nylas grant ID for email receipt search
             
         Yields:
-            Progress events: {"type": "progress", "current": N, "total": M, "status": "enriching"}
+            Progress events: {"type": "progress", "current": N, "total": M, "status": "enriching", ...}
             Complete event: {"type": "complete", "result": {...}}
         """
         total = len(raw_transactions)
         start_time = time.time()
         
+        # Initialize extended progress tracking
+        progress_stats = {
+            "total_transactions": total,
+            "ntropy_completed": 0,
+            "agentic_queued": 0,
+            "agentic_completed": 0,
+            "start_time": start_time
+        }
+        
+        # Initialize agentic enrichment queue if available
+        agentic_queue = None
+        if enable_agentic_enrichment and AGENTIC_ENRICHMENT_AVAILABLE:
+            agentic_queue = get_agentic_queue()
+            agentic_queue.set_total_transactions(total)
+            print(f"[EnrichmentService] Agentic enrichment enabled for {total} transactions")
+        
         # Phase 1: Normalize
-        yield {"type": "progress", "current": 0, "total": total, "status": "extracting", "startTime": int(start_time * 1000)}
+        yield {
+            "type": "progress", 
+            "current": 0, 
+            "total": total, 
+            "status": "extracting", 
+            "startTime": int(start_time * 1000),
+            **progress_stats
+        }
         
         normalized = [self.normalize_truelayer_transaction(tx) for tx in raw_transactions]
         
@@ -331,11 +376,23 @@ class EnrichmentService:
         # Create account holder explicitly (required in Ntropy SDK v5.x)
         self._create_or_get_account_holder(hashed_account_holder_id, account_holder_name, country)
         
-        # Phase 2: Enrich with Ntropy
+        # Start agentic worker in parallel (runs concurrently with Ntropy enrichment)
+        if agentic_queue:
+            await agentic_queue.start()
+            print("[EnrichmentService] Started agentic enrichment workers (parallel)")
+        
+        # Phase 2: Enrich with Ntropy (with parallel agentic queueing)
         results: List[NtropyOutputModel] = []
         
         if self.sdk and NTROPY_AVAILABLE:
-            yield {"type": "progress", "current": 0, "total": total, "status": "enriching", "startTime": int(start_time * 1000)}
+            yield {
+                "type": "progress", 
+                "current": 0, 
+                "total": total, 
+                "status": "enriching", 
+                "startTime": int(start_time * 1000),
+                **progress_stats
+            }
             
             loop = asyncio.get_event_loop()
             
@@ -344,9 +401,9 @@ class EnrichmentService:
             for batch_start in range(0, total, batch_size):
                 batch_end = min(batch_start + batch_size, total)
                 batch = normalized[batch_start:batch_end]
+                raw_batch = raw_transactions[batch_start:batch_end]
                 
                 # Prepare batch data with all enrichment context
-                # Note: account_holder_name is set on the account holder, not transactions
                 tx_data_list = []
                 for norm_tx in batch:
                     entry_type = self._determine_entry_type(norm_tx)
@@ -361,15 +418,32 @@ class EnrichmentService:
                         "country": country,
                     })
                 
-                # Enrich batch concurrently
+                # Enrich batch concurrently with Ntropy
                 enriched_batch = await self._enrich_concurrent(tx_data_list, loop)
                 
-                # Process results
+                # Process results and check for agentic enrichment needs
                 for i, enriched_dict in enumerate(enriched_batch):
                     norm_tx = batch[i]
+                    raw_tx = raw_batch[i]
                     
                     if enriched_dict is None:
-                        results.append(self._create_fallback_output(norm_tx))
+                        result = self._create_fallback_output(norm_tx)
+                        results.append(result)
+                        
+                        # Mark as ntropy_done and check for agentic enrichment
+                        progress_stats["ntropy_completed"] += 1
+                        if agentic_queue:
+                            agentic_queue.mark_ntropy_complete(norm_tx.transaction_id)
+                            # Fallback always needs agentic enrichment
+                            tx_data = self._prepare_transaction_for_agentic(
+                                norm_tx, result, raw_tx, user_id, nylas_grant_id
+                            )
+                            if agentic_queue.add_transaction(
+                                norm_tx.transaction_id,
+                                tx_data,
+                                result.model_dump()
+                            ):
+                                progress_stats["agentic_queued"] += 1
                     else:
                         labels = enriched_dict.get('labels', []) or []
                         merchant = enriched_dict.get('merchant', {}) or {}
@@ -382,7 +456,7 @@ class EnrichmentService:
                             entry_type=entry_type
                         )
                         
-                        results.append(NtropyOutputModel(
+                        result = NtropyOutputModel(
                             transaction_id=norm_tx.transaction_id,
                             original_description=norm_tx.description,
                             merchant_clean_name=merchant.get('name'),
@@ -396,36 +470,158 @@ class EnrichmentService:
                             entry_type=entry_type,
                             budget_category=budget_category,
                             transaction_date=norm_tx.timestamp
-                        ))
+                        )
+                        results.append(result)
+                        
+                        # Mark as ntropy_done
+                        progress_stats["ntropy_completed"] += 1
+                        if agentic_queue:
+                            agentic_queue.mark_ntropy_complete(norm_tx.transaction_id)
+                            
+                            # Check if this transaction needs agentic enrichment
+                            ntropy_result_dict = {
+                                "labels": labels,
+                                "merchant_clean_name": merchant.get('name'),
+                                "merchant": merchant,
+                                "is_recurring": recurrence.get('is_recurring', False)
+                            }
+                            
+                            if needs_agentic_enrichment(ntropy_result_dict, subscription_catalog_match=False):
+                                tx_data = self._prepare_transaction_for_agentic(
+                                    norm_tx, result, raw_tx, user_id, nylas_grant_id
+                                )
+                                if agentic_queue.add_transaction(
+                                    norm_tx.transaction_id,
+                                    tx_data,
+                                    result.model_dump()
+                                ):
+                                    progress_stats["agentic_queued"] += 1
                 
-                # Emit progress update
+                # Update agentic_completed from queue
+                if agentic_queue:
+                    queue_progress = agentic_queue.get_progress()
+                    progress_stats["agentic_completed"] = queue_progress.get("agentic_completed", 0)
+                
+                # Calculate processing rate
+                elapsed = time.time() - start_time
+                if elapsed > 0:
+                    rate = (progress_stats["ntropy_completed"] / elapsed) * 60
+                else:
+                    rate = 0
+                
+                # Emit progress update with extended stats
                 current = len(results)
                 yield {
                     "type": "progress", 
                     "current": current, 
                     "total": total, 
                     "status": "enriching",
-                    "startTime": int(start_time * 1000)
+                    "startTime": int(start_time * 1000),
+                    "ntropy_completed": progress_stats["ntropy_completed"],
+                    "agentic_queued": progress_stats["agentic_queued"],
+                    "agentic_completed": progress_stats["agentic_completed"],
+                    "transactions_per_minute": round(rate, 2),
+                    "estimated_time_remaining": round((total - current) / rate * 60, 1) if rate > 0 else 0
                 }
         else:
             # Fallback mode
-            yield {"type": "progress", "current": 0, "total": total, "status": "classifying", "startTime": int(start_time * 1000)}
+            yield {
+                "type": "progress", 
+                "current": 0, 
+                "total": total, 
+                "status": "classifying", 
+                "startTime": int(start_time * 1000),
+                **progress_stats
+            }
             results = self._fallback_classification(normalized)
+            progress_stats["ntropy_completed"] = total
         
-        # Phase 3: Compute budget analysis
-        yield {"type": "progress", "current": total, "total": total, "status": "classifying", "startTime": int(start_time * 1000)}
+        # Phase 3: Wait for agentic enrichment to complete (in parallel)
+        if agentic_queue and progress_stats["agentic_queued"] > 0:
+            yield {
+                "type": "progress", 
+                "current": total, 
+                "total": total, 
+                "status": "agentic_enriching",
+                "startTime": int(start_time * 1000),
+                **progress_stats
+            }
+            
+            # Wait for agentic queue to drain (with timeout)
+            agentic_result = await agentic_queue.wait_for_completion(timeout=120)
+            progress_stats["agentic_completed"] = agentic_result.get("agentic_completed", 0)
+            
+            # Merge agentic enrichment results back into main results
+            agentic_results_map = {r["transaction_id"]: r for r in agentic_result.get("results", [])}
+            for result in results:
+                if result.transaction_id in agentic_results_map:
+                    agentic_data = agentic_results_map[result.transaction_id]
+                    # Update with agentic enrichment data if confidence is high
+                    if agentic_data.get("ai_confidence", 0) >= 0.7:
+                        if agentic_data.get("subscription_product_name"):
+                            result.merchant_clean_name = agentic_data["subscription_product_name"]
+                        if agentic_data.get("is_subscription"):
+                            result.is_recurring = True
+                            result.budget_category = "fixed"
+        elif agentic_queue:
+            await agentic_queue.stop()
+        
+        # Phase 4: Compute budget analysis
+        yield {
+            "type": "progress", 
+            "current": total, 
+            "total": total, 
+            "status": "classifying", 
+            "startTime": int(start_time * 1000),
+            **progress_stats
+        }
         
         budget_analysis = self._compute_budget_breakdown(results)
         detected_debts = self._extract_detected_debts(results)
         
-        # Final result
+        # Final result with extended stats
+        elapsed = time.time() - start_time
         yield {
             "type": "complete",
             "result": {
                 "enriched_transactions": [r.model_dump() for r in results],
                 "budget_analysis": budget_analysis,
                 "detected_debts": detected_debts
+            },
+            "stats": {
+                "total_transactions": total,
+                "ntropy_completed": progress_stats["ntropy_completed"],
+                "agentic_queued": progress_stats["agentic_queued"],
+                "agentic_completed": progress_stats["agentic_completed"],
+                "elapsed_seconds": round(elapsed, 2),
+                "transactions_per_minute": round((total / elapsed) * 60, 2) if elapsed > 0 else 0
             }
+        }
+    
+    def _prepare_transaction_for_agentic(
+        self,
+        norm_tx: 'TrueLayerIngestModel',
+        result: NtropyOutputModel,
+        raw_tx: Dict[str, Any],
+        user_id: str,
+        nylas_grant_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Prepare transaction data for agentic enrichment queue"""
+        return {
+            "transaction_id": norm_tx.transaction_id,
+            "description": norm_tx.description,
+            "original_description": result.original_description,
+            "merchant_clean_name": result.merchant_clean_name,
+            "amount_cents": result.amount_cents,
+            "currency": norm_tx.currency,
+            "transaction_date": result.transaction_date,
+            "labels": result.labels,
+            "is_recurring": result.is_recurring,
+            "user_id": user_id,
+            "nylas_grant_id": nylas_grant_id,
+            "location_lat": raw_tx.get("location_lat"),
+            "location_long": raw_tx.get("location_long"),
+            "enrichmentStage": "ntropy_done"
         }
     
     def _compute_budget_breakdown(self, enriched: List[NtropyOutputModel], analysis_horizon_months: int = 3) -> Dict[str, Any]:

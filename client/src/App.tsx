@@ -23,6 +23,7 @@ import PaymentCalendar from "@/pages/payment-calendar";
 import BudgetFinder from "@/pages/budget-finder";
 import CurrentFinances from "@/pages/current-finances";
 import BankAccountDetail from "@/pages/bank-account-detail";
+import Permissions from "@/pages/permissions";
 import { type ReactNode } from "react";
 
 function ProtectedRoute({ component: Component }: { component: React.ComponentType }) {
@@ -88,6 +89,7 @@ function Router() {
       <Route path="/budget-finder"><ProtectedRoute component={BudgetFinder} /></Route>
       <Route path="/current-finances"><ProtectedRoute component={CurrentFinances} /></Route>
       <Route path="/current-finances/:id"><ProtectedRoute component={BankAccountDetail} /></Route>
+      <Route path="/permissions"><ProtectedRoute component={Permissions} /></Route>
       <Route path="/dashboard" component={DashboardRedirect} />
       <Route component={NotFound} />
     </Switch>

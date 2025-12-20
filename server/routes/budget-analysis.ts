@@ -82,9 +82,16 @@ interface EnrichmentJob {
   id: string;
   userId: string;
   status: "pending" | "extracting" | "enriching" | "classifying" | "complete" | "error";
+  phase: "ntropy" | "agentic" | "complete";
   current: number;
   total: number;
   startTime: number;
+  ntropyCompleted: number;
+  agenticQueued: number;
+  agenticProcessing: number;
+  agenticCompleted: number;
+  transactionsPerMinute: number;
+  estimatedTimeRemaining: number | null;
   result?: any;
   error?: string;
   subscribers: Response[];
@@ -92,8 +99,61 @@ interface EnrichmentJob {
 
 const enrichmentJobs = new Map<string, EnrichmentJob>();
 
+function calculateProgress(job: EnrichmentJob): { 
+  phase: "ntropy" | "agentic" | "complete";
+  transactionsPerMinute: number;
+  estimatedTimeRemaining: number | null;
+} {
+  const elapsedSeconds = (Date.now() - job.startTime) / 1000;
+  const elapsedMinutes = elapsedSeconds / 60;
+  
+  // Calculate rate based on current phase
+  let processedCount = job.current;
+  let transactionsPerMinute = 0;
+  
+  if (elapsedMinutes > 0 && processedCount > 0) {
+    transactionsPerMinute = Math.round(processedCount / elapsedMinutes);
+  }
+  
+  // Determine current phase
+  let phase: "ntropy" | "agentic" | "complete" = "ntropy";
+  if (job.status === "complete") {
+    phase = "complete";
+  } else if (job.ntropyCompleted >= job.total && job.agenticQueued > 0) {
+    phase = "agentic";
+    // Update rate for agentic phase
+    if (job.agenticCompleted > 0 && elapsedMinutes > 0) {
+      transactionsPerMinute = Math.round(job.agenticCompleted / elapsedMinutes);
+    }
+  }
+  
+  // Calculate ETA
+  let estimatedTimeRemaining: number | null = null;
+  if (transactionsPerMinute > 0) {
+    const remaining = job.total - processedCount;
+    if (remaining > 0) {
+      estimatedTimeRemaining = Math.ceil((remaining / transactionsPerMinute) * 60);
+    }
+  }
+  
+  return { phase, transactionsPerMinute, estimatedTimeRemaining };
+}
+
 function broadcastToSubscribers(job: EnrichmentJob, event: any) {
-  const data = `data: ${JSON.stringify(event)}\n\n`;
+  // Enrich event with calculated progress stats
+  const progressStats = calculateProgress(job);
+  const enrichedEvent = {
+    ...event,
+    phase: progressStats.phase,
+    transactionsPerMinute: progressStats.transactionsPerMinute,
+    estimatedTimeRemaining: progressStats.estimatedTimeRemaining,
+    ntropyCompleted: job.ntropyCompleted,
+    agenticQueued: job.agenticQueued,
+    agenticProcessing: job.agenticProcessing,
+    agenticCompleted: job.agenticCompleted,
+  };
+  
+  const data = `data: ${JSON.stringify(enrichedEvent)}\n\n`;
   job.subscribers.forEach(res => {
     try {
       res.write(data);
@@ -816,15 +876,22 @@ export function registerBudgetAnalysisRoutes(app: Express): void {
         }
       }
       
-      // Create job
+      // Create job with extended progress tracking
       const jobId = randomUUID();
       const job: EnrichmentJob = {
         id: jobId,
         userId,
         status: "pending",
+        phase: "ntropy",
         current: 0,
         total: 0,
         startTime: Date.now(),
+        ntropyCompleted: 0,
+        agenticQueued: 0,
+        agenticProcessing: 0,
+        agenticCompleted: 0,
+        transactionsPerMinute: 0,
+        estimatedTimeRemaining: null,
         subscribers: [],
       };
       enrichmentJobs.set(jobId, job);
@@ -910,6 +977,12 @@ export function registerBudgetAnalysisRoutes(app: Express): void {
                     job.current = event.current;
                     job.total = event.total;
                     job.status = event.status;
+                    // Capture extended stats from Python enrichment service
+                    job.ntropyCompleted = event.ntropy_completed || event.current;
+                    job.agenticQueued = event.agentic_queued || 0;
+                    job.agenticProcessing = event.agentic_processing || 0;
+                    job.agenticCompleted = event.agentic_completed || 0;
+                    
                     broadcastToSubscribers(job, {
                       type: "progress",
                       current: event.current,
@@ -1106,7 +1179,7 @@ export function registerBudgetAnalysisRoutes(app: Express): void {
 
   /**
    * GET /api/budget/enrichment-stream/:jobId
-   * SSE endpoint for streaming enrichment progress
+   * SSE endpoint for streaming enrichment progress (legacy, for backward compatibility)
    */
   app.get("/api/budget/enrichment-stream/:jobId", requireAuth, (req, res) => {
     const { jobId } = req.params;
@@ -1126,7 +1199,8 @@ export function registerBudgetAnalysisRoutes(app: Express): void {
     // Add subscriber
     job.subscribers.push(res);
     
-    // Send current state immediately
+    // Send current state immediately with extended stats
+    const progressStats = calculateProgress(job);
     if (job.status === "complete" && job.result) {
       res.write(`data: ${JSON.stringify({ type: "complete", result: job.result })}\n\n`);
     } else if (job.status === "error") {
@@ -1138,6 +1212,86 @@ export function registerBudgetAnalysisRoutes(app: Express): void {
         total: job.total,
         status: job.status,
         startTime: job.startTime,
+        phase: progressStats.phase,
+        transactionsPerMinute: progressStats.transactionsPerMinute,
+        estimatedTimeRemaining: progressStats.estimatedTimeRemaining,
+        ntropyCompleted: job.ntropyCompleted,
+        agenticQueued: job.agenticQueued,
+        agenticProcessing: job.agenticProcessing,
+        agenticCompleted: job.agenticCompleted,
+      })}\n\n`);
+    }
+    
+    // Handle disconnect
+    req.on("close", () => {
+      const index = job.subscribers.indexOf(res);
+      if (index > -1) {
+        job.subscribers.splice(index, 1);
+      }
+      
+      // Clean up job after all subscribers disconnect (with delay)
+      if (job.subscribers.length === 0) {
+        setTimeout(() => {
+          if (job.subscribers.length === 0) {
+            enrichmentJobs.delete(jobId);
+          }
+        }, 60000); // Clean up after 1 minute
+      }
+    });
+  });
+
+  /**
+   * GET /api/budget/enrichment-progress/:jobId
+   * Unified SSE endpoint for streaming enrichment progress with extended stats
+   * Includes both Ntropy and Agentic enrichment progress
+   */
+  app.get("/api/budget/enrichment-progress/:jobId", requireAuth, (req, res) => {
+    const { jobId } = req.params;
+    const job = enrichmentJobs.get(jobId);
+    
+    if (!job) {
+      return res.status(404).send({ message: "Job not found" });
+    }
+    
+    // Set SSE headers
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
+    res.setHeader("X-Accel-Buffering", "no");
+    res.flushHeaders();
+    
+    // Add subscriber
+    job.subscribers.push(res);
+    
+    // Send current state immediately with full extended progress data
+    const progressStats = calculateProgress(job);
+    if (job.status === "complete" && job.result) {
+      res.write(`data: ${JSON.stringify({ 
+        type: "complete", 
+        result: job.result,
+        phase: "complete",
+        status: "complete",
+      })}\n\n`);
+    } else if (job.status === "error") {
+      res.write(`data: ${JSON.stringify({ 
+        type: "error", 
+        message: job.error,
+        status: "error",
+      })}\n\n`);
+    } else {
+      res.write(`data: ${JSON.stringify({
+        type: "progress",
+        phase: progressStats.phase,
+        current: job.current,
+        total: job.total,
+        status: job.status,
+        startTime: job.startTime,
+        transactionsPerMinute: progressStats.transactionsPerMinute,
+        estimatedTimeRemaining: progressStats.estimatedTimeRemaining,
+        ntropyCompleted: job.ntropyCompleted,
+        agenticQueued: job.agenticQueued,
+        agenticProcessing: job.agenticProcessing,
+        agenticCompleted: job.agenticCompleted,
       })}\n\n`);
     }
     
@@ -1203,5 +1357,65 @@ export function registerBudgetAnalysisRoutes(app: Express): void {
     enrichmentJobs.delete(jobId);
     
     res.json({ success: true, message: "Enrichment job cancelled" });
+  });
+
+  /**
+   * GET /api/budget/enriched-transactions
+   * Returns enriched transactions for the authenticated user, sorted by date descending
+   */
+  app.get("/api/budget/enriched-transactions", requireAuth, async (req, res) => {
+    try {
+      const userId = (req.user as any).id;
+      
+      if (userId === "guest-user") {
+        return res.json({ transactions: [], message: "No transactions for guest users" });
+      }
+      
+      const transactions = await storage.getEnrichedTransactionsByUserId(userId);
+      
+      // Sort by transaction date descending and map to response format
+      const sortedTransactions = transactions
+        .sort((a, b) => {
+          const dateA = new Date(a.transactionDate).getTime();
+          const dateB = new Date(b.transactionDate).getTime();
+          return dateB - dateA;
+        })
+        .map(tx => ({
+          id: tx.id,
+          trueLayerTransactionId: tx.trueLayerTransactionId,
+          merchantCleanName: tx.merchantCleanName,
+          merchantLogoUrl: tx.merchantLogoUrl,
+          originalDescription: tx.originalDescription,
+          amountCents: tx.amountCents,
+          currency: tx.currency,
+          entryType: tx.entryType,
+          budgetCategory: tx.budgetCategory,
+          ukCategory: tx.ukCategory,
+          transactionDate: tx.transactionDate,
+          labels: tx.labels,
+          isRecurring: tx.isRecurring,
+          recurrenceFrequency: tx.recurrenceFrequency,
+          enrichmentStage: tx.enrichmentStage,
+          ntropyConfidence: tx.ntropyConfidence,
+          agenticConfidence: tx.agenticConfidence,
+          aiConfidence: tx.aiConfidence,
+          isSubscription: tx.isSubscription,
+          reasoningTrace: tx.reasoningTrace,
+          contextData: tx.contextData,
+          excludeFromAnalysis: tx.excludeFromAnalysis,
+          transactionType: tx.transactionType,
+        }));
+      
+      res.json({ 
+        transactions: sortedTransactions,
+        count: sortedTransactions.length
+      });
+      
+    } catch (error: any) {
+      console.error("Error fetching enriched transactions:", error);
+      res.status(500).send({ 
+        message: "Failed to fetch transactions. Please try again." 
+      });
+    }
   });
 }
