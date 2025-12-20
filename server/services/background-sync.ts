@@ -449,17 +449,25 @@ async function syncAccount(item: TrueLayerItem): Promise<void> {
 
       // Update lastEnrichedAt
       await storage.updateTrueLayerItem(accountId, { lastEnrichedAt: new Date() });
+      
+      // IMPORTANT: Always recalibrate after adding new transactions
+      // This ensures analysisSummary reflects the newly enriched data
+      console.log(`[Background Sync] Triggering immediate budget recalibration after new transactions`);
+      const freshItem = await storage.getTrueLayerItemById(accountId);
+      if (freshItem) {
+        await recalibrateAccountBudget(freshItem);
+      }
+    } else {
+      // No new transactions, but still check if scheduled recalibration is needed
+      const updatedItem = await storage.getTrueLayerItemById(accountId);
+      if (updatedItem && needsRecalibration(updatedItem)) {
+        await recalibrateAccountBudget(updatedItem);
+      }
     }
 
     // Update lastSyncedAt
     await storage.updateTrueLayerItem(accountId, { lastSyncedAt: new Date() });
     console.log(`[Background Sync] Sync completed for account ${accountId}`);
-
-    // Check if budget recalibration is needed
-    const updatedItem = await storage.getTrueLayerItemById(accountId);
-    if (updatedItem && needsRecalibration(updatedItem)) {
-      await recalibrateAccountBudget(updatedItem);
-    }
 
   } catch (error) {
     console.error(`[Background Sync] Sync failed for account ${accountId}:`, error);

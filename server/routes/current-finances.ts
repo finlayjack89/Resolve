@@ -285,7 +285,17 @@ export function registerCurrentFinancesRoutes(app: Express): void {
         return res.status(403).json({ message: "Access denied" });
       }
 
+      console.log(`[DEBUG] Fetching transactions for accountId: ${accountId}`);
       const transactions = await storage.getEnrichedTransactionsByItemId(accountId);
+      console.log(`[DEBUG] Found ${transactions.length} enriched transactions`);
+      if (transactions.length > 0) {
+        console.log(`[DEBUG] Sample tx:`, {
+          id: transactions[0].id,
+          merchantCleanName: transactions[0].merchantCleanName,
+          ukCategory: transactions[0].ukCategory,
+          originalDescription: transactions[0].originalDescription
+        });
+      }
       const transactionCount = transactions.length;
       
       const transactionDetails: EnrichedTransactionDetail[] = transactions.map((tx) => ({
@@ -328,9 +338,21 @@ export function registerCurrentFinancesRoutes(app: Express): void {
       const items = await storage.getTrueLayerItemsByUserId(userId);
       const user = await storage.getUser(userId);
       
+      console.log(`[DEBUG Combined] User ${userId} has ${items.length} TrueLayer items`);
+      
       const accountsWithCounts = await Promise.all(
         items.map(async (item) => {
           const transactionCount = await storage.getEnrichedTransactionsCountByItemId(item.id);
+          console.log(`[DEBUG Combined] Item ${item.id}: ${transactionCount} transactions, analysisSummary: ${item.analysisSummary ? 'present' : 'missing'}`);
+          if (item.analysisSummary) {
+            console.log(`[DEBUG Combined] Item ${item.id} summary:`, {
+              income: item.analysisSummary.averageMonthlyIncomeCents,
+              fixed: item.analysisSummary.fixedCostsCents,
+              essentials: item.analysisSummary.essentialsCents,
+              discretionary: item.analysisSummary.discretionaryCents,
+              lastUpdated: item.analysisSummary.lastUpdated
+            });
+          }
           return { item, transactionCount };
         })
       );
@@ -340,6 +362,7 @@ export function registerCurrentFinancesRoutes(app: Express): void {
       );
       
       const combined = aggregateAnalysisSummaries(accountsWithCounts);
+      console.log(`[DEBUG Combined] Aggregated result:`, combined);
       
       // Calculate suggested budget for debt repayment
       // Use 50% of discretionary spending as a conservative suggestion

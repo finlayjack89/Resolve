@@ -80,7 +80,6 @@ class NylasService:
                 "client_id": os.environ.get("NYLAS_CLIENT_ID", ""),
                 "redirect_uri": redirect_uri,
                 "state": user_id,
-                "login_hint": "",
                 "provider": "google"
             })
             return auth_url
