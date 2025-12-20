@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, integer, date, jsonb, timestamp, boolean, unique } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, integer, date, jsonb, timestamp, boolean, unique, real } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -202,6 +202,31 @@ export const trueLayerItems = pgTable("truelayer_items", {
   userAccountUnique: unique().on(table.userId, table.trueLayerAccountId),
 }));
 
+// Subscription Catalog - Master list of known UK subscriptions with pricing
+export const subscriptionCatalog = pgTable("subscription_catalog", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  merchantName: text("merchant_name").notNull(),
+  productName: text("product_name").notNull(),
+  amountCents: integer("amount_cents").notNull(),
+  currency: text("currency").default("GBP"),
+  recurrence: text("recurrence").default("Monthly"), // Monthly, Weekly, Yearly, Quarterly
+  category: text("category"), // Entertainment, Utility, Health, Food, Transport, etc.
+  confidenceScore: real("confidence_score").default(1.0),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => ({
+  merchantProductUnique: unique().on(table.merchantName, table.productName),
+}));
+
+// Nylas Grants - Email integration for receipt/subscription confirmation
+export const nylasGrants = pgTable("nylas_grants", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  grantId: text("grant_id").notNull().unique(),
+  emailAddress: text("email_address").notNull(),
+  provider: text("provider"), // google, microsoft, etc.
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
 // Enriched Transactions Cache (Ntropy enrichment results) - Links to specific TrueLayer account
 export const enrichedTransactions = pgTable("enriched_transactions", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -227,6 +252,12 @@ export const enrichedTransactions = pgTable("enriched_transactions", {
   transactionType: text("transaction_type").default("regular"), // 'regular', 'transfer', 'refund', 'reversal'
   linkedTransactionId: varchar("linked_transaction_id"), // Links refund to original expense, or transfer to counterpart
   excludeFromAnalysis: boolean("exclude_from_analysis").default(false), // True for transfers/reversals that shouldn't count
+  // Agentic Enrichment fields
+  isSubscription: boolean("is_subscription").default(false),
+  subscriptionId: varchar("subscription_id").references(() => subscriptionCatalog.id),
+  contextData: jsonb("context_data").$type<Record<string, any>>().default({}),
+  reasoningTrace: jsonb("reasoning_trace").$type<string[]>().default([]),
+  aiConfidence: real("ai_confidence").default(0.0),
   createdAt: timestamp("created_at").defaultNow(),
 }, (table) => ({
   userTransactionUnique: unique().on(table.userId, table.trueLayerTransactionId),
@@ -262,6 +293,12 @@ export type InsertTrueLayerItem = typeof trueLayerItems.$inferInsert;
 
 export type EnrichedTransaction = typeof enrichedTransactions.$inferSelect;
 export type InsertEnrichedTransaction = typeof enrichedTransactions.$inferInsert;
+
+export type SubscriptionCatalog = typeof subscriptionCatalog.$inferSelect;
+export type InsertSubscriptionCatalog = typeof subscriptionCatalog.$inferInsert;
+
+export type NylasGrant = typeof nylasGrants.$inferSelect;
+export type InsertNylasGrant = typeof nylasGrants.$inferInsert;
 
 // API Request/Response Types
 export interface MinPaymentRule {

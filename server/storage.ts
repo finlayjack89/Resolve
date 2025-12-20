@@ -1,5 +1,6 @@
 import { 
   users, accounts, budgets, preferences, plans, lenderRules, trueLayerItems, debtBuckets, enrichedTransactions,
+  subscriptionCatalog, nylasGrants,
   type User, type InsertUser, 
   type Account, type InsertAccount,
   type Budget, type InsertBudget,
@@ -9,10 +10,12 @@ import {
   type TrueLayerItem, type InsertTrueLayerItem,
   type DebtBucket, type InsertDebtBucket,
   type AccountWithBuckets,
-  type EnrichedTransaction, type InsertEnrichedTransaction
+  type EnrichedTransaction, type InsertEnrichedTransaction,
+  type SubscriptionCatalog, type InsertSubscriptionCatalog,
+  type NylasGrant, type InsertNylasGrant
 } from "@shared/schema";
 import { db } from "./db";
-import { eq, and, desc, gte } from "drizzle-orm";
+import { eq, and, desc, gte, ilike } from "drizzle-orm";
 
 export interface IStorage {
   // User methods
@@ -82,6 +85,21 @@ export interface IStorage {
   deleteEnrichedTransactionsByItemId(trueLayerItemId: string): Promise<void>; // NEW: per-account
   cleanupOrphanedEnrichedTransactions(userId: string): Promise<number>; // NEW: cleanup orphans
   updateEnrichedTransactionReconciliation(id: string, updates: { transactionType?: string; linkedTransactionId?: string | null; excludeFromAnalysis?: boolean }): Promise<void>; // Reconciliation updates
+  
+  // Subscription Catalog methods
+  getSubscriptionCatalog(): Promise<SubscriptionCatalog[]>;
+  getSubscriptionCatalogById(id: string): Promise<SubscriptionCatalog | undefined>;
+  searchSubscriptionCatalog(merchantName: string): Promise<SubscriptionCatalog[]>;
+  createSubscriptionCatalogEntry(entry: InsertSubscriptionCatalog): Promise<SubscriptionCatalog>;
+  upsertSubscriptionCatalogEntry(entry: InsertSubscriptionCatalog): Promise<SubscriptionCatalog>;
+  
+  // Nylas Grants methods
+  getNylasGrantsByUserId(userId: string): Promise<NylasGrant[]>;
+  getNylasGrantById(id: string): Promise<NylasGrant | undefined>;
+  getNylasGrantByGrantId(grantId: string): Promise<NylasGrant | undefined>;
+  createNylasGrant(grant: InsertNylasGrant): Promise<NylasGrant>;
+  deleteNylasGrant(id: string): Promise<void>;
+  deleteNylasGrantsByUserId(userId: string): Promise<void>;
 }
 
 type BucketInput = Omit<InsertDebtBucket, 'accountId'>;
@@ -449,6 +467,71 @@ export class DatabaseStorage implements IStorage {
     if (Object.keys(updateObj).length > 0) {
       await db.update(enrichedTransactions).set(updateObj).where(eq(enrichedTransactions.id, id));
     }
+  }
+  
+  // Subscription Catalog methods
+  async getSubscriptionCatalog(): Promise<SubscriptionCatalog[]> {
+    return await db.select().from(subscriptionCatalog);
+  }
+  
+  async getSubscriptionCatalogById(id: string): Promise<SubscriptionCatalog | undefined> {
+    const [entry] = await db.select().from(subscriptionCatalog).where(eq(subscriptionCatalog.id, id));
+    return entry || undefined;
+  }
+  
+  async searchSubscriptionCatalog(merchantName: string): Promise<SubscriptionCatalog[]> {
+    return await db.select().from(subscriptionCatalog)
+      .where(ilike(subscriptionCatalog.merchantName, `%${merchantName}%`));
+  }
+  
+  async createSubscriptionCatalogEntry(entry: InsertSubscriptionCatalog): Promise<SubscriptionCatalog> {
+    const [newEntry] = await db.insert(subscriptionCatalog).values(entry).returning();
+    return newEntry;
+  }
+  
+  async upsertSubscriptionCatalogEntry(entry: InsertSubscriptionCatalog): Promise<SubscriptionCatalog> {
+    const [upsertedEntry] = await db.insert(subscriptionCatalog)
+      .values(entry)
+      .onConflictDoUpdate({
+        target: [subscriptionCatalog.merchantName, subscriptionCatalog.productName],
+        set: {
+          amountCents: entry.amountCents,
+          currency: entry.currency,
+          recurrence: entry.recurrence,
+          category: entry.category,
+          confidenceScore: entry.confidenceScore,
+        },
+      })
+      .returning();
+    return upsertedEntry;
+  }
+  
+  // Nylas Grants methods
+  async getNylasGrantsByUserId(userId: string): Promise<NylasGrant[]> {
+    return await db.select().from(nylasGrants).where(eq(nylasGrants.userId, userId));
+  }
+  
+  async getNylasGrantById(id: string): Promise<NylasGrant | undefined> {
+    const [grant] = await db.select().from(nylasGrants).where(eq(nylasGrants.id, id));
+    return grant || undefined;
+  }
+  
+  async getNylasGrantByGrantId(grantId: string): Promise<NylasGrant | undefined> {
+    const [grant] = await db.select().from(nylasGrants).where(eq(nylasGrants.grantId, grantId));
+    return grant || undefined;
+  }
+  
+  async createNylasGrant(grant: InsertNylasGrant): Promise<NylasGrant> {
+    const [newGrant] = await db.insert(nylasGrants).values(grant).returning();
+    return newGrant;
+  }
+  
+  async deleteNylasGrant(id: string): Promise<void> {
+    await db.delete(nylasGrants).where(eq(nylasGrants.id, id));
+  }
+  
+  async deleteNylasGrantsByUserId(userId: string): Promise<void> {
+    await db.delete(nylasGrants).where(eq(nylasGrants.userId, userId));
   }
 }
 
@@ -848,6 +931,57 @@ class GuestStorageWrapper implements IStorage {
   
   async updateEnrichedTransactionReconciliation(id: string, updates: { transactionType?: string; linkedTransactionId?: string | null; excludeFromAnalysis?: boolean }): Promise<void> {
     return this.dbStorage.updateEnrichedTransactionReconciliation(id, updates);
+  }
+  
+  // Subscription Catalog methods - pass through to database (shared data)
+  async getSubscriptionCatalog(): Promise<SubscriptionCatalog[]> {
+    return this.dbStorage.getSubscriptionCatalog();
+  }
+  
+  async getSubscriptionCatalogById(id: string): Promise<SubscriptionCatalog | undefined> {
+    return this.dbStorage.getSubscriptionCatalogById(id);
+  }
+  
+  async searchSubscriptionCatalog(merchantName: string): Promise<SubscriptionCatalog[]> {
+    return this.dbStorage.searchSubscriptionCatalog(merchantName);
+  }
+  
+  async createSubscriptionCatalogEntry(entry: InsertSubscriptionCatalog): Promise<SubscriptionCatalog> {
+    return this.dbStorage.createSubscriptionCatalogEntry(entry);
+  }
+  
+  async upsertSubscriptionCatalogEntry(entry: InsertSubscriptionCatalog): Promise<SubscriptionCatalog> {
+    return this.dbStorage.upsertSubscriptionCatalogEntry(entry);
+  }
+  
+  // Nylas Grants methods - pass through to database (guest users can't use this)
+  async getNylasGrantsByUserId(userId: string): Promise<NylasGrant[]> {
+    if (this.isGuest(userId)) return [];
+    return this.dbStorage.getNylasGrantsByUserId(userId);
+  }
+  
+  async getNylasGrantById(id: string): Promise<NylasGrant | undefined> {
+    return this.dbStorage.getNylasGrantById(id);
+  }
+  
+  async getNylasGrantByGrantId(grantId: string): Promise<NylasGrant | undefined> {
+    return this.dbStorage.getNylasGrantByGrantId(grantId);
+  }
+  
+  async createNylasGrant(grant: InsertNylasGrant): Promise<NylasGrant> {
+    if (this.isGuest(grant.userId)) {
+      throw new Error("Guest users cannot connect email accounts");
+    }
+    return this.dbStorage.createNylasGrant(grant);
+  }
+  
+  async deleteNylasGrant(id: string): Promise<void> {
+    return this.dbStorage.deleteNylasGrant(id);
+  }
+  
+  async deleteNylasGrantsByUserId(userId: string): Promise<void> {
+    if (this.isGuest(userId)) return;
+    return this.dbStorage.deleteNylasGrantsByUserId(userId);
   }
 }
 
