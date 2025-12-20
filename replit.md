@@ -19,13 +19,18 @@ Preferred communication style: Simple, everyday language.
 - **Authentication & Security**: Scrypt password hashing, express-session, AES-256-GCM encryption for TrueLayer tokens.
 - **TrueLayer Integration**: Handles OAuth2 flow, encrypted token storage, and transaction fetching for budget analysis.
 - **Ntropy Transaction Enrichment**: Enriches bank transactions with merchant data, categorization, and recurring payment detection via Ntropy SDK.
+- **Agentic Transaction Enrichment**: AI-powered pipeline (LangGraph + Claude) for enhanced transaction analysis:
+  - **Subscription Matching**: Database lookup + Serper web search + Claude verification for subscription detection.
+  - **Email Receipt Parsing**: Nylas email integration + Mindee OCR + Claude extraction for receipt data.
+  - **Event Correlation**: Placeholder for location-based event matching.
+  - **Confidence Scoring**: Multi-source agreement scoring with auto-apply threshold (0.8+).
 - **Transaction Reconciliation**: Detects and excludes inter-account transfers (same amount within 2 days, opposite directions) and refunds/reversals (keyword matching + merchant/amount/date fuzzy matching) from budget calculations.
 - **AI Research System**: Claude Sonnet 4.5 for automated lender rule discovery with human verification and intelligent caching.
 - **Python Backend Integration**: FastAPI runs as a child process of the Node.js server, utilizing Google OR-Tools CP-SAT solver. Includes health checks, retry logic, and auto-restart.
 
 ### Data Storage
 - **Database**: PostgreSQL (Neon serverless) with Drizzle ORM.
-- **Schema Design**: Tables for users, accounts, debt buckets, budgets, preferences, plans, lender rules, lender products, and TrueLayer items.
+- **Schema Design**: Tables for users, accounts, debt buckets, budgets, preferences, plans, lender rules, lender products, TrueLayer items, subscription catalog, and Nylas grants.
 - **Key Data Patterns**: Monetary values in cents, percentages in basis points, JSONB for nested data, cascade deletes, encrypted sensitive data.
 
 ### Key Architectural Decisions
