@@ -10,6 +10,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { formatCurrency } from "@/lib/format";
 import { IncreaseBudgetView } from "./increase-budget-view";
 import { useAuth } from "@/lib/auth-context";
+import { ConnectEmailButton } from "./enrichment-ui";
 
 interface DetectedDebtPayment {
   description: string;
@@ -172,6 +173,7 @@ export function BudgetAnalysisView({ open, onOpenChange, analysisData }: BudgetA
               <p className="text-muted-foreground">
                 Based on {analysisData.transactionCount} transactions and {analysisData.directDebitCount} direct debits:
               </p>
+              <ConnectEmailButton className="mt-2" />
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

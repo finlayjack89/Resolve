@@ -11,6 +11,66 @@ import { randomUUID } from "crypto";
 import { mapNtropyLabelsToCategory, UKBudgetCategory } from "../services/category-mapping";
 import { reconcileTransactions } from "../services/transaction-reconciliation";
 
+// Python API base URL for agentic enrichment
+const PYTHON_API_URL = process.env.PYTHON_API_URL || "http://localhost:8000";
+
+/**
+ * Trigger agentic enrichment for transactions (fire-and-forget).
+ * This calls the Python API's /api/enrich endpoint to run AI-powered enrichment:
+ * - Subscription matching (DB + Serper + Claude)
+ * - Email receipt search (if Nylas grant exists)
+ * - Event correlation
+ */
+async function triggerAgenticEnrichment(
+  transactionIds: string[],
+  userId: string,
+  transactions?: any[],
+  nylasGrantId?: string | null
+): Promise<void> {
+  try {
+    const requestBody: any = {
+      transaction_ids: transactionIds,
+      user_id: userId,
+    };
+    
+    if (transactions && transactions.length > 0) {
+      requestBody.transactions = transactions.map(tx => ({
+        transaction_id: tx.trueLayerTransactionId || tx.transaction_id,
+        merchant_name: tx.merchantCleanName || tx.merchant_clean_name,
+        amount_cents: tx.amountCents || tx.amount_cents,
+        currency: tx.currency || "GBP",
+        transaction_date: tx.transactionDate || tx.transaction_date,
+        description: tx.originalDescription || tx.original_description,
+        user_id: userId,
+        nylas_grant_id: nylasGrantId || null,
+      }));
+    }
+    
+    if (nylasGrantId) {
+      requestBody.nylas_grant_id = nylasGrantId;
+    }
+    
+    console.log(`[Agentic Enrichment] Triggering enrichment for ${transactionIds.length} transactions`);
+    
+    const response = await fetch(`${PYTHON_API_URL}/api/enrich`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(requestBody),
+    });
+    
+    if (response.ok) {
+      const result = await response.json();
+      console.log(`[Agentic Enrichment] Job started: ${result.job_id}, status: ${result.status}`);
+    } else {
+      const errorText = await response.text();
+      console.warn(`[Agentic Enrichment] Failed to trigger: ${response.status} - ${errorText}`);
+    }
+  } catch (error) {
+    // Non-blocking: log error but don't fail the main request
+    console.warn("[Agentic Enrichment] Failed to trigger agentic enrichment:", error);
+  }
+}
+
 // Request validation schemas
 const saveBudgetSchema = z.object({
   currentBudgetCents: z.number().int().min(0),
@@ -107,7 +167,7 @@ export function registerBudgetAnalysisRoutes(app: Express): void {
       let directDebits;
       
       try {
-        transactions = await fetchAllTransactions(accessToken, Math.min(Math.max(days, 30), 365));
+        transactions = await fetchAllTransactions(accessToken, true);
         directDebits = await fetchAllDirectDebits(accessToken);
         console.log(`[Budget Analysis] Fetched ${transactions.length} transactions and ${directDebits.length} direct debits for user ${userId}`);
       } catch (error: any) {
@@ -238,6 +298,18 @@ export function registerBudgetAnalysisRoutes(app: Express): void {
               // Step 3: Run reconciliation to detect transfers and refunds
               const reconciliationResult = await reconcileTransactions(userId);
               console.log(`[Budget Analysis] Reconciliation: ${reconciliationResult.transfersDetected} transfers, ${reconciliationResult.refundsDetected} refunds`);
+              
+              // Step 3.5: Trigger agentic enrichment (fire-and-forget)
+              // This runs AI-powered subscription matching, email receipt search, etc.
+              const nylasGrants = await storage.getNylasGrantsByUserId(userId);
+              const nylasGrant = nylasGrants?.[0] || null;
+              const transactionIds = transactionsToSave.map(tx => tx.trueLayerTransactionId);
+              triggerAgenticEnrichment(
+                transactionIds,
+                userId,
+                transactionsToSave,
+                nylasGrant?.grantId || null
+              ).catch(err => console.warn("[Agentic Enrichment] Background trigger failed:", err));
               
               // Step 4: Query ALL stored transactions for this item from DB, filtering excluded ones
               const allStoredTransactions = await storage.getEnrichedTransactionsByItemId(trueLayerItem.id);
@@ -771,7 +843,7 @@ export function registerBudgetAnalysisRoutes(app: Express): void {
           });
           
           const days = 90;
-          const transactions = await fetchAllTransactions(accessToken, days);
+          const transactions = await fetchAllTransactions(accessToken, true);
           const directDebits = await fetchAllDirectDebits(accessToken);
           
           job.total = transactions.length;
