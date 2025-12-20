@@ -265,3 +265,270 @@ async def enrich_transactions_streaming(request: StreamingEnrichmentRequest):
             "X-Accel-Buffering": "no"
         }
     )
+
+
+# ============================================
+# Phase C & D: Agentic Enrichment Endpoints
+# ============================================
+
+from fastapi import BackgroundTasks, Query
+import os
+
+# Import agentic enrichment components
+try:
+    from agents.enrichment_agent import (
+        enrich_transaction,
+        create_enrichment_job,
+        get_enrichment_job,
+        run_enrichment_pipeline
+    )
+    from agents.services.nylas_service import get_nylas_service
+    AGENTIC_ENRICHMENT_AVAILABLE = True
+    print("[Agentic Enrichment] Successfully loaded enrichment agent")
+except ImportError as e:
+    AGENTIC_ENRICHMENT_AVAILABLE = False
+    print(f"[Agentic Enrichment] Warning: Could not load enrichment agent: {e}")
+
+
+# --- Nylas OAuth Endpoints ---
+
+class NylasAuthUrlResponse(schemas.BaseModel):
+    auth_url: Optional[str]
+    error: Optional[str] = None
+
+class NylasCallbackRequest(schemas.BaseModel):
+    code: str
+    state: str  # user_id
+
+class NylasGrantResponse(schemas.BaseModel):
+    id: str
+    grant_id: str
+    email_address: str
+    provider: Optional[str]
+    created_at: Optional[str]
+
+
+@app.get("/api/nylas/auth-url")
+async def get_nylas_auth_url(
+    user_id: str = Query(..., description="User ID to associate with the grant"),
+    redirect_uri: str = Query(..., description="OAuth callback URI")
+) -> NylasAuthUrlResponse:
+    """Generate OAuth URL for email connection"""
+    if not AGENTIC_ENRICHMENT_AVAILABLE:
+        return NylasAuthUrlResponse(auth_url=None, error="Agentic enrichment not available")
+    
+    try:
+        service = get_nylas_service()
+        if not service.is_available():
+            return NylasAuthUrlResponse(auth_url=None, error="Nylas service not configured")
+        
+        auth_url = service.get_auth_url(redirect_uri, user_id)
+        if auth_url:
+            return NylasAuthUrlResponse(auth_url=auth_url)
+        else:
+            return NylasAuthUrlResponse(auth_url=None, error="Failed to generate auth URL")
+    except Exception as e:
+        print(f"[Nylas] Error generating auth URL: {e}")
+        return NylasAuthUrlResponse(auth_url=None, error=str(e))
+
+
+@app.post("/api/nylas/callback")
+async def handle_nylas_callback(request: NylasCallbackRequest) -> Dict[str, Any]:
+    """Handle OAuth callback, store grant in nylas_grants table"""
+    if not AGENTIC_ENRICHMENT_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Agentic enrichment not available")
+    
+    try:
+        service = get_nylas_service()
+        if not service.is_available():
+            raise HTTPException(status_code=503, detail="Nylas service not configured")
+        
+        # Note: In production, redirect_uri should be stored/retrieved securely
+        # For now, we use an environment variable
+        redirect_uri = os.environ.get("NYLAS_REDIRECT_URI", "")
+        
+        token_response = service.exchange_code_for_token(request.code, redirect_uri)
+        
+        if not token_response:
+            raise HTTPException(status_code=400, detail="Failed to exchange code for token")
+        
+        # Return grant info - storage should be handled by the calling Express backend
+        return {
+            "success": True,
+            "user_id": request.state,
+            "grant_id": token_response.get("grant_id"),
+            "email": token_response.get("email"),
+            "provider": token_response.get("provider")
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[Nylas] Callback error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/nylas/grants/{user_id}")
+async def get_user_nylas_grants(user_id: str) -> Dict[str, Any]:
+    """
+    List user's connected email grants.
+    Note: Grant storage/retrieval is managed by the Express backend.
+    This endpoint just checks if Nylas service is available.
+    """
+    if not AGENTIC_ENRICHMENT_AVAILABLE:
+        return {"grants": [], "error": "Agentic enrichment not available"}
+    
+    service = get_nylas_service()
+    return {
+        "nylas_available": service.is_available(),
+        "message": "Grant management handled by Express backend"
+    }
+
+
+# --- Agentic Enrichment Endpoints ---
+
+class AgenticEnrichmentRequest(schemas.BaseModel):
+    """Request for agentic transaction enrichment"""
+    transaction_ids: List[str]
+    transactions: Optional[List[Dict[str, Any]]] = None  # Full transaction data
+    user_id: str
+    nylas_grant_id: Optional[str] = None
+
+class AgenticEnrichmentJobResponse(schemas.BaseModel):
+    job_id: str
+    status: str
+    message: Optional[str] = None
+
+
+@app.post("/api/enrich")
+async def trigger_agentic_enrichment(
+    request: AgenticEnrichmentRequest,
+    background_tasks: BackgroundTasks
+) -> AgenticEnrichmentJobResponse:
+    """
+    Trigger background agentic enrichment for transactions.
+    
+    This runs the full AI-powered enrichment pipeline:
+    1. Subscription matching (DB + Serper + Claude)
+    2. Email receipt search (if Nylas grant exists)
+    3. Event correlation (placeholder)
+    4. Merge results with confidence scoring
+    """
+    if not AGENTIC_ENRICHMENT_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Agentic enrichment not available")
+    
+    print(f"[Agentic Enrichment] Received request to enrich {len(request.transaction_ids)} transactions")
+    
+    try:
+        job_id = create_enrichment_job(request.transaction_ids)
+        
+        # Build transaction list with nylas_grant_id included
+        transactions_to_enrich = request.transactions or [
+            {"transaction_id": tid, "user_id": request.user_id, "nylas_grant_id": request.nylas_grant_id}
+            for tid in request.transaction_ids
+        ]
+        
+        # Add nylas_grant_id to each transaction if provided
+        if request.nylas_grant_id:
+            for tx in transactions_to_enrich:
+                if "nylas_grant_id" not in tx:
+                    tx["nylas_grant_id"] = request.nylas_grant_id
+        
+        # Run enrichment in background
+        background_tasks.add_task(
+            run_enrichment_pipeline,
+            job_id,
+            transactions_to_enrich
+        )
+        
+        return AgenticEnrichmentJobResponse(
+            job_id=job_id,
+            status="pending",
+            message=f"Enrichment job created for {len(request.transaction_ids)} transactions"
+        )
+        
+    except Exception as e:
+        print(f"[Agentic Enrichment] Error creating job: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/enrich/{job_id}")
+async def get_agentic_enrichment_status(job_id: str) -> Dict[str, Any]:
+    """Get status of enrichment job"""
+    if not AGENTIC_ENRICHMENT_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Agentic enrichment not available")
+    
+    job = get_enrichment_job(job_id)
+    
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+    
+    return {
+        "job_id": job_id,
+        "status": job.get("status", "unknown"),
+        "completed": job.get("completed", 0),
+        "total": job.get("total", 0),
+        "results": job.get("results", []),
+        "created_at": job.get("created_at"),
+        "started_at": job.get("started_at"),
+        "completed_at": job.get("completed_at")
+    }
+
+
+# --- Single Transaction Enrichment (Sync) ---
+
+class SingleEnrichmentRequest(schemas.BaseModel):
+    """Request for single transaction enrichment"""
+    transaction_id: str
+    merchant_name: Optional[str] = None
+    amount_cents: int = 0
+    currency: str = "GBP"
+    transaction_date: Optional[str] = None
+    description: Optional[str] = None
+    user_id: Optional[str] = None
+    nylas_grant_id: Optional[str] = None
+    location_lat: Optional[float] = None
+    location_long: Optional[float] = None
+
+
+@app.post("/api/enrich/single")
+async def enrich_single_transaction(request: SingleEnrichmentRequest) -> Dict[str, Any]:
+    """
+    Enrich a single transaction synchronously.
+    Use this for immediate enrichment of individual transactions.
+    """
+    if not AGENTIC_ENRICHMENT_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Agentic enrichment not available")
+    
+    try:
+        result = await enrich_transaction(
+            transaction_id=request.transaction_id,
+            merchant_name=request.merchant_name,
+            amount_cents=request.amount_cents,
+            currency=request.currency,
+            transaction_date=request.transaction_date,
+            description=request.description,
+            user_id=request.user_id,
+            nylas_grant_id=request.nylas_grant_id,
+            location_lat=request.location_lat,
+            location_long=request.location_long
+        )
+        
+        return {
+            "transaction_id": result.transaction_id,
+            "is_subscription": result.is_subscription,
+            "subscription_product_name": result.subscription_product_name,
+            "subscription_category": result.subscription_category,
+            "email_receipt_found": result.email_receipt_found,
+            "email_receipt_data": result.email_receipt_data,
+            "events_nearby": result.events_nearby,
+            "context_data": result.context_data,
+            "reasoning_trace": result.reasoning_trace,
+            "ai_confidence": result.ai_confidence,
+            "needs_review": result.needs_review,
+            "error": result.error
+        }
+        
+    except Exception as e:
+        print(f"[Agentic Enrichment] Single enrichment error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
