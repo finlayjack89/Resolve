@@ -3,7 +3,8 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { useLocation, useSearch } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
-import { RefreshCw, Wallet, Building2, TrendingUp, TrendingDown, PiggyBank, AlertCircle, Loader2 } from "lucide-react";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { RefreshCw, Wallet, Building2, TrendingUp, TrendingDown, PiggyBank, AlertCircle, Loader2, Mail, Receipt } from "lucide-react";
 import { formatCurrency } from "@/lib/format";
 import { useAuth } from "@/lib/auth-context";
 import { ConnectedAccountTile } from "@/components/connected-account-tile";
@@ -73,8 +74,19 @@ export default function CurrentFinances() {
   const [isConnecting, setIsConnecting] = useState(false);
   const [showEnrichmentModal, setShowEnrichmentModal] = useState(false);
   const [enrichmentJobId, setEnrichmentJobId] = useState<string | null>(null);
+  const [showEmailPromptModal, setShowEmailPromptModal] = useState(false);
+  const [isConnectingEmail, setIsConnectingEmail] = useState(false);
 
-  // Handle OAuth callback - check for ?connected=true in URL
+  const { data: nylasGrantStatus, refetch: refetchNylasGrants } = useQuery<{
+    nylas_available: boolean;
+    has_grants: boolean;
+    message: string;
+  }>({
+    queryKey: ["/api/nylas/grants", user?.id],
+    enabled: !!user?.id && user.id !== "guest-user",
+  });
+
+  // Handle OAuth callback - check for ?connected=true or ?email_connected=true in URL
   useEffect(() => {
     const params = new URLSearchParams(searchString);
     if (params.get("connected") === "true") {
@@ -82,13 +94,24 @@ export default function CurrentFinances() {
       setLocation("/current-finances", { replace: true });
       // Start enrichment process
       startEnrichmentAfterConnection();
+    } else if (params.get("email_connected") === "true") {
+      // Clear URL params
+      setLocation("/current-finances", { replace: true });
+      setIsConnectingEmail(false);
+      // Refresh grants status
+      refetchNylasGrants();
+      toast({
+        title: "Email Connected",
+        description: "Your email has been connected for enhanced receipt matching.",
+      });
     } else if (params.get("error")) {
       const error = params.get("error");
       setLocation("/current-finances", { replace: true });
       setIsConnecting(false);
+      setIsConnectingEmail(false);
       toast({
         title: "Connection Failed",
-        description: error || "Failed to connect bank account",
+        description: error || "Failed to connect",
         variant: "destructive",
       });
     }
@@ -149,7 +172,7 @@ export default function CurrentFinances() {
     }
   };
 
-  const handleEnrichmentComplete = (result: any) => {
+  const handleEnrichmentComplete = async (result: any) => {
     setShowEnrichmentModal(false);
     setEnrichmentJobId(null);
     queryClient.invalidateQueries({ queryKey: ["/api/current-finances/combined"] });
@@ -157,6 +180,45 @@ export default function CurrentFinances() {
       title: "Analysis Complete",
       description: "Your transactions have been analyzed successfully.",
     });
+    
+    // Check if user already has Nylas grants - if not, show the email connection prompt
+    const grantsResult = await refetchNylasGrants();
+    if (grantsResult.data && !grantsResult.data.has_grants && grantsResult.data.nylas_available) {
+      // Small delay to let the user see the success toast first
+      setTimeout(() => {
+        setShowEmailPromptModal(true);
+      }, 1000);
+    }
+  };
+
+  const handleConnectEmail = async () => {
+    if (user?.id === "guest-user") {
+      toast({
+        title: "Sign in required",
+        description: "Please sign in to connect your email for enhanced receipt matching",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setIsConnectingEmail(true);
+    try {
+      const response = await apiRequest("GET", `/api/nylas/auth-url?user_id=${user?.id}&redirect_uri=${encodeURIComponent(window.location.origin + "/current-finances?email_connected=true")}`);
+      const data = await response.json();
+      
+      if (data.auth_url) {
+        window.location.href = data.auth_url;
+      } else {
+        throw new Error(data.error || "Failed to start email connection");
+      }
+    } catch (error: any) {
+      setIsConnectingEmail(false);
+      toast({
+        title: "Connection Error",
+        description: error.message || "Failed to connect email",
+        variant: "destructive",
+      });
+    }
   };
 
   const handleEnrichmentError = (error: string) => {
@@ -488,6 +550,67 @@ export default function CurrentFinances() {
         onError={handleEnrichmentError}
         onCancel={handleCancelEnrichment}
       />
+
+      {/* Nylas Email Connection Prompt Modal */}
+      <Dialog open={showEmailPromptModal} onOpenChange={setShowEmailPromptModal}>
+        <DialogContent className="sm:max-w-md" data-testid="dialog-email-prompt">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Mail className="h-5 w-5 text-primary" />
+              Enhance Your Transaction Matching
+            </DialogTitle>
+            <DialogDescription className="pt-2">
+              Connect your email to automatically match receipts with your transactions for more accurate expense tracking.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="flex items-start gap-3">
+              <Receipt className="h-5 w-5 text-green-500 mt-0.5 flex-shrink-0" />
+              <div>
+                <p className="text-sm font-medium">Automatic Receipt Matching</p>
+                <p className="text-sm text-muted-foreground">
+                  We'll scan your email for receipts and match them with bank transactions
+                </p>
+              </div>
+            </div>
+            <div className="flex items-start gap-3">
+              <TrendingUp className="h-5 w-5 text-blue-500 mt-0.5 flex-shrink-0" />
+              <div>
+                <p className="text-sm font-medium">Better Subscription Detection</p>
+                <p className="text-sm text-muted-foreground">
+                  Identify recurring charges and subscription services more accurately
+                </p>
+              </div>
+            </div>
+          </div>
+          <DialogFooter className="flex-col sm:flex-row gap-2">
+            <Button
+              variant="outline"
+              onClick={() => setShowEmailPromptModal(false)}
+              data-testid="button-email-maybe-later"
+            >
+              Maybe Later
+            </Button>
+            <Button
+              onClick={handleConnectEmail}
+              disabled={isConnectingEmail}
+              data-testid="button-email-connect"
+            >
+              {isConnectingEmail ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Connecting...
+                </>
+              ) : (
+                <>
+                  <Mail className="mr-2 h-4 w-4" />
+                  Connect Email
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
