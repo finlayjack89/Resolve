@@ -348,6 +348,8 @@ export function registerBudgetAnalysisRoutes(app: Express): void {
                   ukCategory: categoryMapping.ukCategory,
                   transactionDate: tx.transaction_date,
                   currency: tx.currency || "GBP",
+                  enrichmentStage: "ntropy_done",
+                  ntropyConfidence: tx.confidence ?? null,
                 };
               });
               
@@ -579,6 +581,51 @@ export function registerBudgetAnalysisRoutes(app: Express): void {
       console.error("Error fetching current budget:", error);
       res.status(500).send({ 
         message: "Failed to fetch budget. Please try again." 
+      });
+    }
+  });
+
+  /**
+   * POST /api/internal/enrichment-update
+   * Internal endpoint for Python agentic enrichment to update enrichment results.
+   * Called by the Python API after AI-powered enrichment completes.
+   * Security: Only accepts requests from localhost (Python backend runs on same machine)
+   */
+  app.post("/api/internal/enrichment-update", async (req, res) => {
+    try {
+      // Security: Only allow requests from localhost
+      const clientIp = req.ip || req.socket.remoteAddress || "";
+      const isLocal = clientIp === "127.0.0.1" || clientIp === "::1" || clientIp === "::ffff:127.0.0.1";
+      if (!isLocal) {
+        console.warn(`[Enrichment Update] Rejected request from non-local IP: ${clientIp}`);
+        return res.status(403).json({ success: false, error: "Forbidden" });
+      }
+      
+      const { transaction_id, enrichment_stage, agentic_confidence, is_subscription, context_data, reasoning_trace } = req.body;
+      
+      if (!transaction_id) {
+        return res.status(400).json({ 
+          success: false, 
+          error: "transaction_id is required" 
+        });
+      }
+      
+      await storage.updateEnrichedTransactionEnrichment(transaction_id, {
+        enrichmentStage: enrichment_stage,
+        agenticConfidence: agentic_confidence,
+        isSubscription: is_subscription,
+        contextData: context_data,
+        reasoningTrace: reasoning_trace
+      });
+      
+      console.log(`[Enrichment Update] Updated transaction ${transaction_id.substring(0, 16)}... stage=${enrichment_stage}, confidence=${agentic_confidence}`);
+      
+      res.json({ success: true });
+    } catch (error: any) {
+      console.error("[Enrichment Update] Error updating transaction:", error);
+      res.status(500).json({ 
+        success: false, 
+        error: error.message || "Failed to update enrichment" 
       });
     }
   });
@@ -1041,6 +1088,8 @@ export function registerBudgetAnalysisRoutes(app: Express): void {
                             ukCategory: categoryMapping.ukCategory,
                             transactionDate: tx.transaction_date,
                             currency: tx.currency || "GBP",
+                            enrichmentStage: "ntropy_done",
+                            ntropyConfidence: tx.confidence ?? null,
                           };
                         });
                         

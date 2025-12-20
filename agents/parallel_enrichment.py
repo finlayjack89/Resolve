@@ -273,6 +273,21 @@ class AgenticEnrichmentQueue:
                 async with self._lock:
                     self._results[transaction_id] = result_dict
                 
+                # Persist enrichment results to database
+                if self._db_upsert_func:
+                    try:
+                        await self._db_upsert_func(
+                            transaction_id=transaction_id,
+                            enrichment_stage=EnrichmentStage.AGENTIC_DONE.value,
+                            agentic_confidence=result_dict.get('ai_confidence'),
+                            is_subscription=result_dict.get('is_subscription', False),
+                            context_data=result_dict.get('context_data'),
+                            reasoning_trace=result_dict.get('reasoning_trace'),
+                        )
+                        print(f"[AgenticQueue] Persisted {transaction_id[:16]}... to database")
+                    except Exception as db_err:
+                        print(f"[AgenticQueue] Failed to persist {transaction_id[:16]}...: {db_err}")
+                
                 print(f"[AgenticQueue] Completed {transaction_id[:16]}... (confidence: {result_dict.get('ai_confidence', 0):.2f})")
                 
                 return result_dict

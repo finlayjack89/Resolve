@@ -1,9 +1,10 @@
-# main.py (Production Ready - v1.5 - Streaming Enrichment)
+# main.py (Production Ready - v1.6 - Streaming Enrichment with DB Persistence)
 
 import sys
 import asyncio
 import time
 import json
+import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from typing import Optional, List, Dict, Any
@@ -283,11 +284,71 @@ try:
         run_enrichment_pipeline
     )
     from agents.services.nylas_service import get_nylas_service
+    from agents.parallel_enrichment import get_agentic_queue
     AGENTIC_ENRICHMENT_AVAILABLE = True
     print("[Agentic Enrichment] Successfully loaded enrichment agent")
 except ImportError as e:
     AGENTIC_ENRICHMENT_AVAILABLE = False
     print(f"[Agentic Enrichment] Warning: Could not load enrichment agent: {e}")
+
+
+# Node.js API base URL for enrichment persistence
+NODE_API_URL = os.environ.get("NODE_API_URL", "http://localhost:5000")
+
+
+async def db_upsert_func(
+    transaction_id: str,
+    enrichment_stage: str,
+    agentic_confidence: Optional[float] = None,
+    is_subscription: bool = False,
+    context_data: Optional[Dict[str, Any]] = None,
+    reasoning_trace: Optional[List[str]] = None
+) -> bool:
+    """
+    Async function that calls the Node.js API to update enrichment results.
+    This is passed to get_agentic_queue() to enable database persistence.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(
+                f"{NODE_API_URL}/api/internal/enrichment-update",
+                json={
+                    "transaction_id": transaction_id,
+                    "enrichment_stage": enrichment_stage,
+                    "agentic_confidence": agentic_confidence,
+                    "is_subscription": is_subscription,
+                    "context_data": context_data,
+                    "reasoning_trace": reasoning_trace
+                }
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                if result.get("success"):
+                    print(f"[DB Upsert] Successfully updated {transaction_id[:16]}...")
+                    return True
+                else:
+                    print(f"[DB Upsert] API returned error for {transaction_id[:16]}...: {result.get('error')}")
+                    return False
+            else:
+                print(f"[DB Upsert] HTTP {response.status_code} for {transaction_id[:16]}...: {response.text}")
+                return False
+                
+    except httpx.TimeoutException:
+        print(f"[DB Upsert] Timeout updating {transaction_id[:16]}...")
+        return False
+    except Exception as e:
+        print(f"[DB Upsert] Error updating {transaction_id[:16]}...: {e}")
+        return False
+
+
+# Initialize the agentic queue with db_upsert_func at startup
+if AGENTIC_ENRICHMENT_AVAILABLE:
+    try:
+        _agentic_queue = get_agentic_queue(db_upsert_func=db_upsert_func)
+        print("[Agentic Enrichment] Initialized queue with db_upsert_func")
+    except Exception as e:
+        print(f"[Agentic Enrichment] Failed to initialize queue: {e}")
 
 
 # --- Nylas OAuth Endpoints ---

@@ -85,6 +85,7 @@ export interface IStorage {
   deleteEnrichedTransactionsByItemId(trueLayerItemId: string): Promise<void>; // NEW: per-account
   cleanupOrphanedEnrichedTransactions(userId: string): Promise<number>; // NEW: cleanup orphans
   updateEnrichedTransactionReconciliation(id: string, updates: { transactionType?: string; linkedTransactionId?: string | null; excludeFromAnalysis?: boolean }): Promise<void>; // Reconciliation updates
+  updateEnrichedTransactionEnrichment(trueLayerTransactionId: string, updates: { enrichmentStage?: string; agenticConfidence?: number | null; isSubscription?: boolean; contextData?: Record<string, any>; reasoningTrace?: string[] }): Promise<void>; // Agentic enrichment updates
   
   // Subscription Catalog methods
   getSubscriptionCatalog(): Promise<SubscriptionCatalog[]>;
@@ -466,6 +467,28 @@ export class DatabaseStorage implements IStorage {
     }
     if (Object.keys(updateObj).length > 0) {
       await db.update(enrichedTransactions).set(updateObj).where(eq(enrichedTransactions.id, id));
+    }
+  }
+  
+  async updateEnrichedTransactionEnrichment(trueLayerTransactionId: string, updates: { enrichmentStage?: string; agenticConfidence?: number | null; isSubscription?: boolean; contextData?: Record<string, any>; reasoningTrace?: string[] }): Promise<void> {
+    const updateObj: any = {};
+    if (updates.enrichmentStage !== undefined) {
+      updateObj.enrichmentStage = updates.enrichmentStage;
+    }
+    if (updates.agenticConfidence !== undefined) {
+      updateObj.agenticConfidence = updates.agenticConfidence;
+    }
+    if (updates.isSubscription !== undefined) {
+      updateObj.isSubscription = updates.isSubscription;
+    }
+    if (updates.contextData !== undefined) {
+      updateObj.contextData = updates.contextData;
+    }
+    if (updates.reasoningTrace !== undefined) {
+      updateObj.reasoningTrace = updates.reasoningTrace;
+    }
+    if (Object.keys(updateObj).length > 0) {
+      await db.update(enrichedTransactions).set(updateObj).where(eq(enrichedTransactions.trueLayerTransactionId, trueLayerTransactionId));
     }
   }
   
@@ -931,6 +954,10 @@ class GuestStorageWrapper implements IStorage {
   
   async updateEnrichedTransactionReconciliation(id: string, updates: { transactionType?: string; linkedTransactionId?: string | null; excludeFromAnalysis?: boolean }): Promise<void> {
     return this.dbStorage.updateEnrichedTransactionReconciliation(id, updates);
+  }
+  
+  async updateEnrichedTransactionEnrichment(trueLayerTransactionId: string, updates: { enrichmentStage?: string; agenticConfidence?: number | null; isSubscription?: boolean; contextData?: Record<string, any>; reasoningTrace?: string[] }): Promise<void> {
+    return this.dbStorage.updateEnrichedTransactionEnrichment(trueLayerTransactionId, updates);
   }
   
   // Subscription Catalog methods - pass through to database (shared data)
