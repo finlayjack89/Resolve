@@ -239,7 +239,7 @@ const NTROPY_LABEL_MAPPINGS: Array<{ patterns: string[]; mapping: CategoryMappin
   },
   // Discretionary - Dining
   {
-    patterns: ["restaurant", "dining", "takeaway", "fast food", "cafe", "coffee", "pub", "bar", "deliveroo", "just eat", "uber eats", "mcdonald", "kfc", "pizza", "nando", "wagamama", "costa", "starbucks", "pret", "greggs"],
+    patterns: ["restaurant", "dining", "takeaway", "fast food", "cafe", "coffee", "pub", "bar", "deliveroo", "just eat", "uber eats", "mcdonald", "kfc", "pizza", "nando", "wagamama", "costa", "starbucks", "pret", "greggs", "subway", "burger king", "five guys", "leon", "itsu", "eat", "wasabi", "pod", "tortilla", "chipotle", "taco bell", "wendys", "domino", "papa john", "pizza hut"],
     mapping: {
       ukCategory: UKBudgetCategory.DINING,
       budgetGroup: "discretionary",
@@ -332,12 +332,32 @@ const NTROPY_LABEL_MAPPINGS: Array<{ patterns: string[]; mapping: CategoryMappin
   },
   // Other - Fees
   {
-    patterns: ["fee", "charge", "overdraft", "interest", "bank charge"],
+    patterns: ["fee", "charge", "overdraft", "interest", "bank charge", "od int", "daily od", "non-gbp", "trans fee", "purch fee", "foreign transaction"],
     mapping: {
       ukCategory: UKBudgetCategory.FEES,
       budgetGroup: "other",
       displayName: "Fees & Charges",
       icon: "AlertCircle",
+    },
+  },
+  // Fixed Costs - Broadband/Phone
+  {
+    patterns: ["virgin media", "sky broadband", "bt broadband", "talktalk", "plusnet", "ee", "vodafone", "o2", "three", "giffgaff", "tesco mobile", "sim only"],
+    mapping: {
+      ukCategory: UKBudgetCategory.UTILITIES,
+      budgetGroup: "fixed_costs",
+      displayName: "Utilities",
+      icon: "Zap",
+    },
+  },
+  // Discretionary - Software/Tech subscriptions
+  {
+    patterns: ["replit", "github", "aws", "google cloud", "azure", "digital ocean", "heroku", "vercel", "netlify", "notion", "figma", "canva", "adobe", "microsoft 365", "dropbox", "icloud", "google one"],
+    mapping: {
+      ukCategory: UKBudgetCategory.SUBSCRIPTIONS,
+      budgetGroup: "discretionary",
+      displayName: "Subscriptions",
+      icon: "Repeat",
     },
   },
 ];

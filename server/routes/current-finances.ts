@@ -538,4 +538,100 @@ export function registerCurrentFinancesRoutes(app: Express): void {
       res.status(500).json({ message: "Failed to update account" });
     }
   });
+
+  // ==================== Nylas Proxy Routes ====================
+  // These routes proxy to the Python FastAPI backend for Nylas email integration
+  
+  const PYTHON_API_URL = process.env.PYTHON_API_URL || "http://localhost:8000";
+
+  /**
+   * GET /api/nylas/grants
+   * Check Nylas availability and user's connected email grants
+   */
+  app.get("/api/nylas/grants", requireAuth, async (req, res) => {
+    try {
+      const userId = (req.user as any).id;
+      
+      const response = await fetch(`${PYTHON_API_URL}/api/nylas/grants/${userId}`);
+      
+      if (response.ok) {
+        const data = await response.json();
+        res.json(data);
+      } else {
+        // Python service unavailable or error
+        res.json({
+          nylas_available: false,
+          has_grants: false,
+          message: "Nylas service unavailable"
+        });
+      }
+    } catch (error: any) {
+      console.error("[Nylas Proxy] Error checking grants:", error);
+      res.json({
+        nylas_available: false,
+        has_grants: false,
+        message: "Failed to connect to Nylas service"
+      });
+    }
+  });
+
+  /**
+   * GET /api/nylas/auth-url
+   * Get Nylas OAuth URL for email connection
+   */
+  app.get("/api/nylas/auth-url", requireAuth, async (req, res) => {
+    try {
+      const userId = (req.user as any).id;
+      const redirectUri = req.query.redirect_uri as string;
+      
+      const url = new URL(`${PYTHON_API_URL}/api/nylas/auth-url`);
+      url.searchParams.set("user_id", userId);
+      if (redirectUri) {
+        url.searchParams.set("redirect_uri", redirectUri);
+      }
+      
+      const response = await fetch(url.toString());
+      
+      if (response.ok) {
+        const data = await response.json();
+        res.json(data);
+      } else {
+        res.json({
+          auth_url: null,
+          error: "Failed to generate auth URL"
+        });
+      }
+    } catch (error: any) {
+      console.error("[Nylas Proxy] Error getting auth URL:", error);
+      res.json({
+        auth_url: null,
+        error: "Nylas service unavailable"
+      });
+    }
+  });
+
+  /**
+   * POST /api/nylas/callback
+   * Handle Nylas OAuth callback
+   */
+  app.post("/api/nylas/callback", requireAuth, async (req, res) => {
+    try {
+      const response = await fetch(`${PYTHON_API_URL}/api/nylas/callback`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(req.body),
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        res.json(data);
+      } else {
+        const error = await response.text();
+        res.status(response.status).json({ error });
+      }
+    } catch (error: any) {
+      console.error("[Nylas Proxy] Error handling callback:", error);
+      res.status(500).json({ error: "Nylas service unavailable" });
+    }
+  });
 }
