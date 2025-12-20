@@ -44,23 +44,32 @@ class NylasService:
     
     def _init_client(self):
         if not NYLAS_AVAILABLE:
-            print("[NylasService] Nylas SDK not available")
+            print("[NylasService] Nylas SDK not available - import failed")
             return
         
         api_key = os.environ.get("NYLAS_API_KEY")
+        client_id = os.environ.get("NYLAS_CLIENT_ID")
         api_uri = os.environ.get("NYLAS_API_URI", "https://api.us.nylas.com")
         
+        print(f"[NylasService] Init check - API_KEY set: {bool(api_key)}, CLIENT_ID set: {bool(client_id)}, API_URI: {api_uri}")
+        
         if api_key:
-            self.client = Client(
-                api_key=api_key,
-                api_uri=api_uri
-            )
-            print("[NylasService] Nylas client initialized successfully")
+            try:
+                self.client = Client(
+                    api_key=api_key,
+                    api_uri=api_uri
+                )
+                print("[NylasService] Nylas client initialized successfully")
+            except Exception as e:
+                print(f"[NylasService] Error initializing Nylas client: {e}")
+                self.client = None
         else:
-            print("[NylasService] Warning: NYLAS_API_KEY not set")
+            print("[NylasService] Warning: NYLAS_API_KEY not set - client not initialized")
     
     def is_available(self) -> bool:
-        return self.client is not None
+        available = self.client is not None
+        print(f"[NylasService] is_available() called - returning {available}")
+        return available
     
     def get_auth_url(self, redirect_uri: str, user_id: str) -> Optional[str]:
         if not self.client:

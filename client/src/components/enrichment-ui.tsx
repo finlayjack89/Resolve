@@ -84,25 +84,26 @@ export function ConnectEmailButton({ onConnected, className }: ConnectEmailButto
     );
   }
 
-  if (!grantStatus?.nylas_available) {
-    return null;
-  }
-
+  // Show button even if Nylas isn't available yet - it may be initializing
+  // The button will show an error toast if they try to connect when unavailable
+  const isNylasAvailable = grantStatus?.nylas_available !== false;
+  
   return (
     <Button
       variant="outline"
       size="sm"
       onClick={handleConnect}
-      disabled={connectEmailMutation.isPending || isConnecting}
+      disabled={connectEmailMutation.isPending || isConnecting || !isNylasAvailable}
       className={className}
       data-testid="button-connect-email"
+      title={!isNylasAvailable ? "Email connection service initializing..." : undefined}
     >
       {connectEmailMutation.isPending || isConnecting ? (
         <Loader2 className="h-4 w-4 mr-2 animate-spin" />
       ) : (
         <Mail className="h-4 w-4 mr-2" />
       )}
-      Connect Email for Receipts
+      {!isNylasAvailable ? "Email Service Initializing..." : "Connect Email for Receipts"}
     </Button>
   );
 }

@@ -551,26 +551,50 @@ export function registerCurrentFinancesRoutes(app: Express): void {
   app.get("/api/nylas/grants", requireAuth, async (req, res) => {
     try {
       const userId = (req.user as any).id;
+      console.log(`[Nylas Proxy] Checking grants for user: ${userId}`);
       
-      const response = await fetch(`${PYTHON_API_URL}/api/nylas/grants/${userId}`);
+      // First, check the database for existing grants
+      const userGrants = await storage.getNylasGrantsByUserId(userId);
+      const hasGrants = userGrants.length > 0;
+      const connectedEmail = hasGrants ? userGrants[0].emailAddress : undefined;
       
-      if (response.ok) {
-        const data = await response.json();
-        res.json(data);
-      } else {
-        // Python service unavailable or error
-        res.json({
-          nylas_available: false,
-          has_grants: false,
-          message: "Nylas service unavailable"
-        });
+      console.log(`[Nylas Proxy] User has ${userGrants.length} grants in database`);
+      
+      // Then check Python service availability
+      let nylasAvailable = false;
+      let pythonMessage = "";
+      
+      try {
+        const response = await fetch(`${PYTHON_API_URL}/api/nylas/grants/${userId}`);
+        
+        if (response.ok) {
+          const data = await response.json();
+          nylasAvailable = data.nylas_available === true;
+          pythonMessage = data.message || "";
+          console.log(`[Nylas Proxy] Python service response - nylas_available: ${nylasAvailable}`);
+        } else {
+          console.log(`[Nylas Proxy] Python service returned status: ${response.status}`);
+        }
+      } catch (pythonError: any) {
+        console.error("[Nylas Proxy] Python service unavailable:", pythonError.message);
       }
+      
+      res.json({
+        nylas_available: nylasAvailable,
+        has_grants: hasGrants,
+        connected_email: connectedEmail,
+        message: hasGrants 
+          ? "Email connected" 
+          : nylasAvailable 
+            ? "Ready to connect email" 
+            : pythonMessage || "Nylas service initializing"
+      });
     } catch (error: any) {
       console.error("[Nylas Proxy] Error checking grants:", error);
       res.json({
         nylas_available: false,
         has_grants: false,
-        message: "Failed to connect to Nylas service"
+        message: "Failed to check grant status"
       });
     }
   });

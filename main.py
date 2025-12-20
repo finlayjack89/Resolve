@@ -434,14 +434,27 @@ async def get_user_nylas_grants(user_id: str) -> Dict[str, Any]:
     """
     List user's connected email grants.
     Note: Grant storage/retrieval is managed by the Express backend.
-    This endpoint just checks if Nylas service is available.
+    This endpoint checks if Nylas service is available and returns status info.
     """
+    print(f"[Nylas] Checking grants for user: {user_id}")
+    
     if not AGENTIC_ENRICHMENT_AVAILABLE:
-        return {"grants": [], "error": "Agentic enrichment not available"}
+        print("[Nylas] AGENTIC_ENRICHMENT_AVAILABLE is False")
+        return {
+            "nylas_available": False,
+            "has_grants": False,
+            "message": "Agentic enrichment not available",
+            "debug_info": "AGENTIC_ENRICHMENT_AVAILABLE=False"
+        }
     
     service = get_nylas_service()
+    is_available = service.is_available()
+    
+    print(f"[Nylas] Service available: {is_available}")
+    
     return {
-        "nylas_available": service.is_available(),
+        "nylas_available": is_available,
+        "has_grants": False,  # Express backend will override this with actual DB lookup
         "message": "Grant management handled by Express backend"
     }
 
