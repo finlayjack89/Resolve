@@ -622,20 +622,36 @@ export function registerCurrentFinancesRoutes(app: Express): void {
     }
   });
 
+  // Build the callback URL dynamically based on the environment
+  function getNylasCallbackUrl(): string {
+    // First check for explicit environment variable
+    if (process.env.NYLAS_REDIRECT_URI) {
+      return process.env.NYLAS_REDIRECT_URI;
+    }
+    // Use Replit dev domain if available
+    if (process.env.REPLIT_DEV_DOMAIN) {
+      return `https://${process.env.REPLIT_DEV_DOMAIN}/api/nylas/callback`;
+    }
+    // Fallback for local development
+    return "http://localhost:5000/api/nylas/callback";
+  }
+
   /**
    * GET /api/nylas/auth-url
    * Get Nylas OAuth URL for email connection
+   * Uses a fixed callback URL (/api/nylas/callback) so only ONE URL needs to be registered in Nylas
    */
   app.get("/api/nylas/auth-url", requireAuth, async (req, res) => {
     try {
       const userId = (req.user as any).id;
-      const redirectUri = req.query.redirect_uri as string;
+      
+      // Use our dedicated callback URL - this is the ONLY URL that needs to be in Nylas dashboard
+      const callbackUrl = getNylasCallbackUrl();
+      console.log(`[Nylas] Generating auth URL with callback: ${callbackUrl}`);
       
       const url = new URL(`${PYTHON_API_URL}/api/nylas/auth-url`);
       url.searchParams.set("user_id", userId);
-      if (redirectUri) {
-        url.searchParams.set("redirect_uri", redirectUri);
-      }
+      url.searchParams.set("redirect_uri", callbackUrl);
       
       const response = await fetch(url.toString());
       
@@ -658,8 +674,63 @@ export function registerCurrentFinancesRoutes(app: Express): void {
   });
 
   /**
+   * GET /api/nylas/callback
+   * Handle Nylas OAuth callback - this is where Nylas redirects after user authorizes
+   * Receives: ?code=...&state=userId
+   */
+  app.get("/api/nylas/callback", async (req, res) => {
+    try {
+      const code = req.query.code as string;
+      const state = req.query.state as string; // This is the user_id we passed
+      
+      if (!code || !state) {
+        console.error("[Nylas Callback] Missing code or state parameter");
+        return res.redirect("/current-finances?email_error=missing_params");
+      }
+      
+      console.log(`[Nylas Callback] Received OAuth callback for user: ${state}`);
+      
+      // Call Python backend to exchange code for token
+      const response = await fetch(`${PYTHON_API_URL}/api/nylas/callback`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code, state }),
+      });
+      
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error("[Nylas Callback] Token exchange failed:", errorText);
+        return res.redirect("/current-finances?email_error=token_exchange_failed");
+      }
+      
+      const data = await response.json();
+      
+      if (!data.success || !data.grant_id) {
+        console.error("[Nylas Callback] Invalid response from token exchange:", data);
+        return res.redirect("/current-finances?email_error=invalid_response");
+      }
+      
+      // Save the grant to the database
+      await storage.createNylasGrant({
+        userId: state,
+        grantId: data.grant_id,
+        emailAddress: data.email || "unknown",
+        provider: data.provider || "unknown",
+      });
+      
+      console.log(`[Nylas Callback] Successfully saved grant for user ${state}, email: ${data.email}`);
+      
+      // Redirect to current-finances page with success indicator
+      res.redirect("/current-finances?email_connected=true");
+    } catch (error: any) {
+      console.error("[Nylas Callback] Error handling callback:", error);
+      res.redirect("/current-finances?email_error=server_error");
+    }
+  });
+
+  /**
    * POST /api/nylas/callback
-   * Handle Nylas OAuth callback
+   * Alternative POST handler for programmatic token exchange (legacy support)
    */
   app.post("/api/nylas/callback", requireAuth, async (req, res) => {
     try {

@@ -46,9 +46,11 @@ integrations = ["javascript_anthropic:1.0.0", "javascript_anthropic_ai_integrati
 
 [userenv.production]
 TRUELAYER_REDIRECT_URI = "https://resolve.money/api/truelayer/callback"
+NYLAS_REDIRECT_URI = "https://resolve.money/api/nylas/callback"
 
 [userenv.development]
 TRUELAYER_REDIRECT_URI = "https://0a2878c0-df6a-4aa2-9b96-f4f14ff144f9-00-3v89rkgntjhz4.riker.replit.dev/api/truelayer/callback"
+NYLAS_REDIRECT_URI = "https://0a2878c0-df6a-4aa2-9b96-f4f14ff144f9-00-3v89rkgntjhz4.riker.replit.dev/api/nylas/callback"
 
 [userenv.shared]
 USE_TRUELAYER_SANDBOX = "false"
