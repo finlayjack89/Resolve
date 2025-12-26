@@ -71,10 +71,13 @@ class NtropyOutputModel(BaseModel):
     entry_type: str  # 'incoming' or 'outgoing'
     budget_category: str  # 'debt', 'fixed', 'discretionary'
     transaction_date: str
-    # New fields for 4-layer confidence-gated cascade
+    # Fields for 4-layer confidence-gated cascade
     ntropy_confidence: float = 0.8
+    agentic_confidence: Optional[float] = None  # Final confidence after agentic enrichment
+    enrichment_stage: str = "ntropy_done"  # 'ntropy_done', 'agentic_done', etc.
     enrichment_source: Optional[str] = None  # 'math_brain', 'ntropy', 'context_hunter', 'sherlock'
     reasoning_trace: List[str] = Field(default_factory=list)
+    context_data: Optional[Dict[str, Any]] = None  # Additional context from cascade layers
     exclude_from_analysis: bool = False
     transaction_type: str = "regular"  # 'regular', 'transfer', 'refund'
     linked_transaction_id: Optional[str] = None
@@ -806,8 +809,32 @@ class EnrichmentService:
             for result in results:
                 if result.transaction_id in agentic_results_map:
                     agentic_data = agentic_results_map[result.transaction_id]
+                    
+                    # Always merge cascade metadata fields regardless of confidence
+                    ai_confidence = agentic_data.get("ai_confidence")
+                    if ai_confidence is not None:
+                        result.agentic_confidence = ai_confidence  # Store agentic confidence separately
+                    
+                    # Mark as agentic_done since this went through the agentic queue
+                    result.enrichment_stage = "agentic_done"
+                    
+                    # Set enrichment source from cascade layer
+                    enrichment_source = agentic_data.get("enrichment_source")
+                    if enrichment_source:
+                        result.enrichment_source = enrichment_source
+                    
+                    # Store reasoning trace for debugging
+                    reasoning = agentic_data.get("reasoning_trace")
+                    if reasoning:
+                        result.reasoning_trace = reasoning if isinstance(reasoning, list) else [reasoning]
+                    
+                    # Store context data from cascade layers
+                    context = agentic_data.get("context_data")
+                    if context:
+                        result.context_data = context
+                    
                     # Update with agentic enrichment data if confidence is high
-                    if agentic_data.get("ai_confidence", 0) >= 0.7:
+                    if ai_confidence is not None and ai_confidence >= 0.7:
                         if agentic_data.get("subscription_product_name"):
                             result.merchant_clean_name = agentic_data["subscription_product_name"]
                         if agentic_data.get("is_subscription"):
