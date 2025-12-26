@@ -1099,8 +1099,14 @@ export function registerBudgetAnalysisRoutes(app: Express): void {
                             ukCategory: categoryMapping.ukCategory,
                             transactionDate: tx.transaction_date,
                             currency: tx.currency || "GBP",
-                            enrichmentStage: "ntropy_done",
-                            ntropyConfidence: tx.confidence ?? null,
+                            // Use actual enrichment stage from Python, fallback to ntropy_done
+                            enrichmentStage: tx.enrichment_stage || "ntropy_done",
+                            ntropyConfidence: tx.confidence ?? tx.ntropy_confidence ?? null,
+                            // Cascade fields from agentic enrichment
+                            agenticConfidence: tx.agentic_confidence ?? null,
+                            enrichmentSource: tx.enrichment_source || null,
+                            contextData: tx.context_data || null,
+                            reasoningTrace: tx.reasoning_trace || null,
                           };
                         });
                         
