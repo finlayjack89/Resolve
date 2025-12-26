@@ -18,13 +18,13 @@ Preferred communication style: Simple, everyday language.
 - **API Structure**: RESTful endpoints for authentication, accounts, budget, preferences, plans, and integrations (TrueLayer, lender rules, statement guidance).
 - **Authentication & Security**: Scrypt password hashing, express-session, AES-256-GCM encryption for TrueLayer tokens.
 - **TrueLayer Integration**: Handles OAuth2 flow, encrypted token storage, and transaction fetching for budget analysis.
-- **Ntropy Transaction Enrichment**: Enriches bank transactions with merchant data, categorization, and recurring payment detection via Ntropy SDK.
-- **Agentic Transaction Enrichment**: AI-powered pipeline (LangGraph + Claude) for enhanced transaction analysis:
-  - **Subscription Matching**: Database lookup + Serper web search + Claude verification for subscription detection.
-  - **Email Receipt Parsing**: Nylas email integration + Mindee OCR + Claude extraction for receipt data.
-  - **Event Correlation**: Placeholder for location-based event matching.
-  - **Confidence Scoring**: Multi-source agreement scoring with auto-apply threshold (0.8+).
-- **Transaction Reconciliation**: Detects and excludes inter-account transfers (same amount within 2 days, opposite directions) and refunds/reversals (keyword matching + merchant/amount/date fuzzy matching) from budget calculations.
+- **4-Layer Confidence-Gated Cascade**: Sequential enrichment pipeline with 0.90 confidence threshold that stops when confident:
+  - **Layer 0 (Math Brain/Ghost Pair)**: Detects internal transfers (same amount, opposite directions, within 2 days). Sets confidence=1.0, enrichment_source="math_brain", excludes from analysis. STOPS cascade.
+  - **Layer 1 (Ntropy)**: Merchant enrichment with ambiguity penalties (Amazon/PayPal/Tesco/eBay = 0.5x, "General Merchandise" = 0.6x). If ntropy_confidence >= 0.90, sets enrichment_source="ntropy" and STOPS cascade.
+  - **Layer 2 (Context Hunter)**: Nylas email search + Mindee OCR for receipt data. If confidence >= 0.90, sets enrichment_source="context_hunter" and STOPS.
+  - **Layer 3 (Sherlock)**: Claude claude-sonnet-4-20250514 + web search for opaque transactions. Final categorization with enrichment_source="sherlock".
+- **Cascade Field Tracking**: Each transaction stores enrichment_source, ntropy_confidence, reasoning_trace (array of layer decisions), and exclude_from_analysis.
+- **Transaction Reconciliation**: Ghost Pair detection (Layer 0) now runs FIRST in cascade, detecting inter-account transfers before Ntropy. Refunds/reversals detected via keyword matching + merchant/amount/date fuzzy matching.
 - **AI Research System**: Claude Sonnet 4.5 for automated lender rule discovery with human verification and intelligent caching.
 - **Python Backend Integration**: FastAPI runs as a child process of the Node.js server, utilizing Google OR-Tools CP-SAT solver. Includes health checks, retry logic, and auto-restart.
 
