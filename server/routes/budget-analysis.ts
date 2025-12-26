@@ -972,6 +972,15 @@ export function registerBudgetAnalysisRoutes(app: Express): void {
             : null;
           const streamUserCountry = streamUser?.country || "GB";
           
+          // Get Nylas grant for Context Hunter (Layer 2)
+          const streamNylasGrants = await storage.getNylasGrantsByUserId(userId);
+          const streamNylasGrant = streamNylasGrants?.[0] || null;
+          if (streamNylasGrant) {
+            console.log(`[Enrichment Job ${jobId}] Found Nylas grant for Context Hunter: ${streamNylasGrant.grantId.substring(0, 8)}...`);
+          } else {
+            console.log(`[Enrichment Job ${jobId}] No Nylas grant found - Context Hunter will be skipped`);
+          }
+          
           // Stream enrichment through Python
           const streamResponse = await fetch("http://localhost:8000/enrich-transactions-stream", {
             method: "POST",
@@ -992,6 +1001,7 @@ export function registerBudgetAnalysisRoutes(app: Express): void {
               analysis_months: Math.max(1, Math.round(days / 30)),
               account_holder_name: streamAccountHolderName,
               country: streamUserCountry,
+              nylas_grant_id: streamNylasGrant?.grantId || null,
             }),
           });
           
