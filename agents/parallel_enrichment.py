@@ -78,19 +78,33 @@ AMBIGUOUS_LABELS = [
     'purchase', 'payment', 'transfer', 'unknown', 'uncategorized'
 ]
 
+# Confidence threshold for 4-layer cascade
+CONFIDENCE_THRESHOLD = 0.90
+
 
 def needs_agentic_enrichment(
     ntropy_result: Dict[str, Any],
-    subscription_catalog_match: bool = False
+    subscription_catalog_match: bool = False,
+    ntropy_confidence: Optional[float] = None
 ) -> bool:
     """
     Determine if a transaction needs additional AI-powered enrichment.
     
-    Conditions for agentic enrichment:
+    4-Layer Confidence-Gated Cascade:
+    - If ntropy_confidence >= 0.90: STOP (skip agentic enrichment)
+    - If ntropy_confidence < 0.90: Continue to Layer 2/3 (agentic enrichment)
+    
+    Legacy conditions (still apply when confidence check passes):
     1. No subscription catalog match found
     2. Labels are ambiguous (e.g., 'retail', 'services' without clear category)
     3. Merchant name is still unclear
     """
+    # Primary gate: ntropy_confidence threshold
+    if ntropy_confidence is not None:
+        if ntropy_confidence >= CONFIDENCE_THRESHOLD:
+            print(f"[AgenticQueue] Skipping agentic - Ntropy confidence {ntropy_confidence:.2f} >= {CONFIDENCE_THRESHOLD}")
+            return False
+    
     if subscription_catalog_match:
         return False
     
@@ -110,6 +124,11 @@ def needs_agentic_enrichment(
         return True
     
     if has_only_ambiguous_labels and merchant_unclear:
+        return True
+    
+    # Also check for low confidence even if labels/merchant are clear
+    if ntropy_confidence is not None and ntropy_confidence < 0.5:
+        print(f"[AgenticQueue] Low confidence {ntropy_confidence:.2f} - needs agentic enrichment")
         return True
     
     return False

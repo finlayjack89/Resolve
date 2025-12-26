@@ -71,6 +71,13 @@ class NtropyOutputModel(BaseModel):
     entry_type: str  # 'incoming' or 'outgoing'
     budget_category: str  # 'debt', 'fixed', 'discretionary'
     transaction_date: str
+    # New fields for 4-layer confidence-gated cascade
+    ntropy_confidence: float = 0.8
+    enrichment_source: Optional[str] = None  # 'math_brain', 'ntropy', 'context_hunter', 'sherlock'
+    reasoning_trace: List[str] = Field(default_factory=list)
+    exclude_from_analysis: bool = False
+    transaction_type: str = "regular"  # 'regular', 'transfer', 'refund'
+    linked_transaction_id: Optional[str] = None
 
 
 # ============== Classification Constants ==============
@@ -99,6 +106,34 @@ DISCRETIONARY_LABELS = [
     'shopping', 'retail', 'clothing', 'electronics', 'entertainment',
     'leisure', 'travel', 'holiday', 'gambling', 'betting', 'lottery'
 ]
+
+# ============== Layer 1 Ambiguity Penalties ==============
+# Penalties applied to Ntropy confidence for ambiguous merchants/labels
+# Lower penalty = less confident (multiply base_confidence * penalty)
+AMBIGUITY_PENALTIES = {
+    # Marketplace merchants - could be anything
+    "amazon": 0.5,
+    "paypal": 0.5,
+    "tesco": 0.5,
+    "ebay": 0.5,
+    "walmart": 0.5,
+    "target": 0.5,
+    # Generic labels
+    "general merchandise": 0.6,
+    "retail": 0.7,
+    "services": 0.7,
+    "other": 0.5,
+    "miscellaneous": 0.5,
+    "unknown": 0.3,
+    "uncategorized": 0.3,
+    "general": 0.6,
+    "purchase": 0.7,
+    "payment": 0.7,
+    "transfer": 0.6,
+}
+
+# Confidence threshold for stopping the cascade
+CONFIDENCE_THRESHOLD = 0.90
 
 
 # ============== Enrichment Service ==============
@@ -172,6 +207,134 @@ class EnrichmentService:
             transaction_classification=raw_tx.get("transaction_classification", []),
             timestamp=date_str
         )
+    
+    def _detect_ghost_pairs(
+        self,
+        normalized_transactions: List[TrueLayerIngestModel]
+    ) -> Dict[str, Dict[str, Any]]:
+        """
+        Layer 0: Ghost Pair Detection (Math Brain)
+        
+        Detects internal transfers between accounts:
+        - Same amount as another transaction (opposite direction)
+        - Within 2 days of each other
+        - Opposite entry types (incoming vs outgoing)
+        
+        Returns:
+            Dict mapping transaction_id -> ghost pair match info
+        """
+        from datetime import datetime, timedelta
+        
+        ghost_pairs: Dict[str, Dict[str, Any]] = {}
+        processed_ids = set()
+        
+        # Group transactions by amount for faster matching
+        amount_groups: Dict[int, List[TrueLayerIngestModel]] = {}
+        for tx in normalized_transactions:
+            amount_cents = int(tx.amount * 100)
+            if amount_cents not in amount_groups:
+                amount_groups[amount_cents] = []
+            amount_groups[amount_cents].append(tx)
+        
+        for tx in normalized_transactions:
+            if tx.transaction_id in processed_ids:
+                continue
+                
+            amount_cents = int(tx.amount * 100)
+            candidates = amount_groups.get(amount_cents, [])
+            
+            tx_entry_type = self._determine_entry_type(tx)
+            
+            try:
+                tx_date = datetime.strptime(tx.timestamp, "%Y-%m-%d")
+            except ValueError:
+                continue
+            
+            for candidate in candidates:
+                if candidate.transaction_id == tx.transaction_id:
+                    continue
+                if candidate.transaction_id in processed_ids:
+                    continue
+                    
+                candidate_entry_type = self._determine_entry_type(candidate)
+                
+                # Check opposite entry types
+                if tx_entry_type == candidate_entry_type:
+                    continue
+                    
+                try:
+                    candidate_date = datetime.strptime(candidate.timestamp, "%Y-%m-%d")
+                except ValueError:
+                    continue
+                
+                # Check within 2 days
+                days_diff = abs((tx_date - candidate_date).days)
+                if days_diff > 2:
+                    continue
+                
+                # Found a ghost pair!
+                ghost_pairs[tx.transaction_id] = {
+                    "linked_id": candidate.transaction_id,
+                    "amount_cents": amount_cents,
+                    "days_apart": days_diff,
+                    "entry_type": tx_entry_type,
+                    "linked_entry_type": candidate_entry_type
+                }
+                ghost_pairs[candidate.transaction_id] = {
+                    "linked_id": tx.transaction_id,
+                    "amount_cents": amount_cents,
+                    "days_apart": days_diff,
+                    "entry_type": candidate_entry_type,
+                    "linked_entry_type": tx_entry_type
+                }
+                
+                processed_ids.add(tx.transaction_id)
+                processed_ids.add(candidate.transaction_id)
+                
+                print(f"[EnrichmentService] Layer 0: Ghost Pair detected - {tx.transaction_id[:16]}... <-> {candidate.transaction_id[:16]}... ({amount_cents/100:.2f})")
+                break
+        
+        return ghost_pairs
+    
+    def _calculate_ntropy_confidence(
+        self,
+        merchant_name: Optional[str],
+        labels: List[str],
+        recurrence_confidence: Optional[float] = None
+    ) -> tuple[float, Optional[str]]:
+        """
+        Layer 1: Calculate Ntropy confidence with ambiguity penalties
+        
+        Returns:
+            Tuple of (final_confidence, penalty_reason or None)
+        """
+        # Base confidence from recurrence or default
+        base_confidence = recurrence_confidence if recurrence_confidence is not None else 0.8
+        
+        # Find lowest applicable penalty
+        lowest_penalty = 1.0
+        penalty_reason = None
+        
+        # Check merchant name
+        if merchant_name:
+            merchant_lower = merchant_name.lower()
+            for ambiguous_name, penalty in AMBIGUITY_PENALTIES.items():
+                if ambiguous_name in merchant_lower:
+                    if penalty < lowest_penalty:
+                        lowest_penalty = penalty
+                        penalty_reason = f"ambiguous merchant: {ambiguous_name}"
+        
+        # Check labels
+        for label in labels:
+            label_lower = label.lower()
+            for ambiguous_label, penalty in AMBIGUITY_PENALTIES.items():
+                if ambiguous_label in label_lower:
+                    if penalty < lowest_penalty:
+                        lowest_penalty = penalty
+                        penalty_reason = f"ambiguous label: {ambiguous_label}"
+        
+        final_confidence = base_confidence * lowest_penalty
+        return (final_confidence, penalty_reason)
     
     def _hash_account_holder_id(self, user_id: str, truelayer_item_id: str) -> str:
         """
@@ -365,6 +528,24 @@ class EnrichmentService:
         
         normalized = [self.normalize_truelayer_transaction(tx) for tx in raw_transactions]
         
+        # ============== LAYER 0: Ghost Pair Detection (Math Brain) ==============
+        # Run BEFORE Ntropy to catch internal transfers first
+        ghost_pairs = self._detect_ghost_pairs(normalized)
+        ghost_pair_count = len(ghost_pairs) // 2  # Each pair has 2 entries
+        print(f"[EnrichmentService] Layer 0: Detected {ghost_pair_count} ghost pairs (transfers)")
+        
+        progress_stats["ghost_pairs_detected"] = ghost_pair_count
+        
+        yield {
+            "type": "progress",
+            "current": 0,
+            "total": total,
+            "status": "detecting_transfers",
+            "startTime": int(start_time * 1000),
+            "ghost_pairs_detected": ghost_pair_count,
+            **progress_stats
+        }
+        
         # Hash user ID + truelayer_item_id for unique Ntropy account holder isolation
         hashed_account_holder_id = self._hash_account_holder_id(user_id, truelayer_item_id)
         
@@ -383,6 +564,9 @@ class EnrichmentService:
         
         # Phase 2: Enrich with Ntropy (with parallel agentic queueing)
         results: List[NtropyOutputModel] = []
+        
+        # Track high-confidence transactions that don't need agentic enrichment
+        high_confidence_count = 0
         
         if self.sdk and NTROPY_AVAILABLE:
             yield {
@@ -425,9 +609,46 @@ class EnrichmentService:
                 for i, enriched_dict in enumerate(enriched_batch):
                     norm_tx = batch[i]
                     raw_tx = raw_batch[i]
+                    entry_type = self._determine_entry_type(norm_tx)
                     
+                    # ============== LAYER 0 CHECK: Ghost Pair ==============
+                    # If this is a ghost pair, skip Ntropy processing entirely
+                    if norm_tx.transaction_id in ghost_pairs:
+                        ghost_info = ghost_pairs[norm_tx.transaction_id]
+                        
+                        result = NtropyOutputModel(
+                            transaction_id=norm_tx.transaction_id,
+                            original_description=norm_tx.description,
+                            merchant_clean_name=None,
+                            merchant_logo_url=None,
+                            merchant_website_url=None,
+                            labels=["transfer", "internal"],
+                            is_recurring=False,
+                            recurrence_frequency=None,
+                            recurrence_day=None,
+                            amount_cents=int(norm_tx.amount * 100),
+                            entry_type=entry_type,
+                            budget_category="transfer",
+                            transaction_date=norm_tx.timestamp,
+                            # Layer 0 cascade fields
+                            ntropy_confidence=1.0,
+                            enrichment_source="math_brain",
+                            reasoning_trace=[f"Layer 0: Ghost Pair detected - matched with TX {ghost_info['linked_id'][:16]}..."],
+                            exclude_from_analysis=True,
+                            transaction_type="transfer",
+                            linked_transaction_id=ghost_info["linked_id"]
+                        )
+                        results.append(result)
+                        progress_stats["ntropy_completed"] += 1
+                        high_confidence_count += 1
+                        print(f"[EnrichmentService] Layer 0: Skipping Ntropy for ghost pair {norm_tx.transaction_id[:16]}... (confidence=1.0)")
+                        continue
+                    
+                    # ============== LAYER 1: Ntropy Processing ==============
                     if enriched_dict is None:
                         result = self._create_fallback_output(norm_tx)
+                        result.reasoning_trace = ["Layer 1: Ntropy enrichment failed - using fallback"]
+                        result.ntropy_confidence = 0.3
                         results.append(result)
                         
                         # Mark as ntropy_done and check for agentic enrichment
@@ -448,13 +669,36 @@ class EnrichmentService:
                         labels = enriched_dict.get('labels', []) or []
                         merchant = enriched_dict.get('merchant', {}) or {}
                         recurrence = enriched_dict.get('recurrence', {}) or {}
+                        recurrence_group = enriched_dict.get('recurrence_group', {}) or {}
                         
-                        entry_type = self._determine_entry_type(norm_tx)
                         budget_category = self.classify_transaction(
                             labels=labels,
                             is_recurring=recurrence.get('is_recurring', False),
                             entry_type=entry_type
                         )
+                        
+                        # Calculate confidence with ambiguity penalties
+                        recurrence_confidence = recurrence_group.get('confidence')
+                        ntropy_confidence, penalty_reason = self._calculate_ntropy_confidence(
+                            merchant.get('name'),
+                            labels,
+                            recurrence_confidence
+                        )
+                        
+                        # Build reasoning trace
+                        reasoning_trace = []
+                        if penalty_reason:
+                            reasoning_trace.append(f"Layer 1: Ntropy confidence={ntropy_confidence:.2f} (penalty applied for {penalty_reason})")
+                        else:
+                            reasoning_trace.append(f"Layer 1: Ntropy confidence={ntropy_confidence:.2f}")
+                        
+                        # Determine if we should skip agentic enrichment (confidence gate)
+                        skip_agentic = ntropy_confidence >= CONFIDENCE_THRESHOLD
+                        enrichment_source = "ntropy" if skip_agentic else None
+                        
+                        if skip_agentic:
+                            reasoning_trace.append(f"Layer 1: Confidence >= {CONFIDENCE_THRESHOLD} - cascade STOP")
+                            high_confidence_count += 1
                         
                         result = NtropyOutputModel(
                             transaction_id=norm_tx.transaction_id,
@@ -469,7 +713,11 @@ class EnrichmentService:
                             amount_cents=int(norm_tx.amount * 100),
                             entry_type=entry_type,
                             budget_category=budget_category,
-                            transaction_date=norm_tx.timestamp
+                            transaction_date=norm_tx.timestamp,
+                            # Layer 1 cascade fields
+                            ntropy_confidence=ntropy_confidence,
+                            enrichment_source=enrichment_source,
+                            reasoning_trace=reasoning_trace
                         )
                         results.append(result)
                         
@@ -478,24 +726,26 @@ class EnrichmentService:
                         if agentic_queue:
                             agentic_queue.mark_ntropy_complete(norm_tx.transaction_id)
                             
-                            # Check if this transaction needs agentic enrichment
-                            ntropy_result_dict = {
-                                "labels": labels,
-                                "merchant_clean_name": merchant.get('name'),
-                                "merchant": merchant,
-                                "is_recurring": recurrence.get('is_recurring', False)
-                            }
-                            
-                            if needs_agentic_enrichment(ntropy_result_dict, subscription_catalog_match=False):
-                                tx_data = self._prepare_transaction_for_agentic(
-                                    norm_tx, result, raw_tx, user_id, nylas_grant_id
-                                )
-                                if agentic_queue.add_transaction(
-                                    norm_tx.transaction_id,
-                                    tx_data,
-                                    result.model_dump()
-                                ):
-                                    progress_stats["agentic_queued"] += 1
+                            # Only queue for agentic if confidence < threshold
+                            if not skip_agentic:
+                                ntropy_result_dict = {
+                                    "labels": labels,
+                                    "merchant_clean_name": merchant.get('name'),
+                                    "merchant": merchant,
+                                    "is_recurring": recurrence.get('is_recurring', False),
+                                    "ntropy_confidence": ntropy_confidence
+                                }
+                                
+                                if needs_agentic_enrichment(ntropy_result_dict, subscription_catalog_match=False, ntropy_confidence=ntropy_confidence):
+                                    tx_data = self._prepare_transaction_for_agentic(
+                                        norm_tx, result, raw_tx, user_id, nylas_grant_id
+                                    )
+                                    if agentic_queue.add_transaction(
+                                        norm_tx.transaction_id,
+                                        tx_data,
+                                        result.model_dump()
+                                    ):
+                                        progress_stats["agentic_queued"] += 1
                 
                 # Update agentic_completed from queue
                 if agentic_queue:

@@ -46,6 +46,7 @@ class EnrichmentResult:
     context_data: Dict[str, Any] = field(default_factory=dict)
     reasoning_trace: List[str] = field(default_factory=list)
     ai_confidence: float = 0.0
+    enrichment_source: Optional[str] = None  # 'math_brain', 'ntropy', 'context_hunter', 'sherlock'
     needs_review: bool = False
     error: Optional[str] = None
 
@@ -58,6 +59,7 @@ class EnrichmentState(TypedDict):
     reasoning_trace: Annotated[List[str], operator.add]
     context_data: Dict[str, Any]
     ai_confidence: float
+    enrichment_source: Optional[str]  # 'math_brain', 'ntropy', 'context_hunter', 'sherlock'
     error: Optional[str]
     db_query_func: Optional[Any]
     db_upsert_func: Optional[Any]
@@ -242,8 +244,126 @@ async def event_correlation_node(state: EnrichmentState) -> EnrichmentState:
         }
 
 
+CONFIDENCE_THRESHOLD = 0.90
+
+
+async def sherlock_node(state: EnrichmentState) -> EnrichmentState:
+    """
+    Layer 3: Sherlock - Claude-powered final categorization
+    
+    Only invoked if confidence < 0.90 after Context Hunter (Layer 2)
+    Uses Claude for intelligent categorization with web search capability
+    """
+    reasoning_trace = ["[Layer 3] Sherlock starting - deep analysis"]
+    
+    current_confidence = state.get("ai_confidence", 0.0)
+    
+    if current_confidence >= CONFIDENCE_THRESHOLD:
+        reasoning_trace.append(f"[Layer 3] Skipping - confidence already >= {CONFIDENCE_THRESHOLD}")
+        return {
+            **state,
+            "reasoning_trace": reasoning_trace
+        }
+    
+    transaction = state["transaction"]
+    
+    try:
+        from langchain_anthropic import ChatAnthropic
+        import os
+        
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            reasoning_trace.append("[Layer 3] Skipping - ANTHROPIC_API_KEY not set")
+            return {
+                **state,
+                "reasoning_trace": reasoning_trace
+            }
+        
+        llm = ChatAnthropic(
+            model="claude-sonnet-4-20250514",
+            api_key=api_key,
+            max_tokens=500
+        )
+        
+        merchant = transaction.get("merchant_name") or transaction.get("description", "")
+        amount = transaction.get("amount_cents", 0) / 100
+        description = transaction.get("description", "")
+        
+        prompt = f"""Analyze this transaction and determine the most likely category:
+
+Transaction: {description}
+Merchant/Payee: {merchant}
+Amount: £{amount:.2f}
+
+Categories to choose from:
+- subscription: Recurring subscription service (Netflix, Spotify, gym, etc.)
+- utility: Utility bills (gas, electric, water, internet)
+- debt_payment: Loan, credit card, BNPL payment
+- groceries: Supermarket/grocery shopping
+- dining: Restaurants, takeaway, coffee shops
+- transport: Fuel, parking, public transport
+- entertainment: Cinema, events, gaming
+- shopping: Retail purchases
+- transfer: Internal account transfer
+- income: Salary, refund, or other incoming funds
+- other: Cannot determine category
+
+Respond with ONLY a JSON object:
+{{"category": "category_name", "confidence": 0.0-1.0, "reasoning": "brief explanation"}}"""
+
+        response = await llm.ainvoke(prompt)
+        response_text = response.content if hasattr(response, 'content') else str(response)
+        
+        import json
+        try:
+            start_idx = response_text.find('{')
+            end_idx = response_text.rfind('}') + 1
+            if start_idx >= 0 and end_idx > start_idx:
+                result = json.loads(response_text[start_idx:end_idx])
+                sherlock_confidence = result.get("confidence", 0.7)
+                sherlock_category = result.get("category", "other")
+                sherlock_reasoning = result.get("reasoning", "")
+                
+                reasoning_trace.append(f"[Layer 3] Sherlock identified as {sherlock_category} (confidence: {sherlock_confidence:.2f})")
+                reasoning_trace.append(f"[Layer 3] Reasoning: {sherlock_reasoning}")
+                
+                context_data = state.get("context_data", {})
+                context_data["sherlock"] = {
+                    "category": sherlock_category,
+                    "confidence": sherlock_confidence,
+                    "reasoning": sherlock_reasoning
+                }
+                
+                final_confidence = max(current_confidence, sherlock_confidence)
+                enrichment_source = "sherlock" if sherlock_confidence >= 0.7 else state.get("enrichment_source")
+                
+                return {
+                    **state,
+                    "context_data": context_data,
+                    "ai_confidence": final_confidence,
+                    "enrichment_source": enrichment_source,
+                    "reasoning_trace": reasoning_trace
+                }
+        except json.JSONDecodeError:
+            reasoning_trace.append(f"[Layer 3] Failed to parse Sherlock response")
+            
+    except Exception as e:
+        reasoning_trace.append(f"[Layer 3] Error: {str(e)}")
+    
+    return {
+        **state,
+        "reasoning_trace": reasoning_trace
+    }
+
+
 async def merge_results_node(state: EnrichmentState) -> EnrichmentState:
-    reasoning_trace = ["[Merge] Combining enrichment results"]
+    """
+    Merge results from all layers with 4-layer confidence-gated cascade logic
+    
+    Layer 2 (Context Hunter): Email receipt search - if found, confidence boost
+    Sets enrichment_source based on which layer achieved >= 0.90 confidence
+    """
+    reasoning_trace = ["[Merge] Combining enrichment results with 4-layer cascade"]
     
     subscription_result = state.get("subscription_result")
     email_result = state.get("email_result")
@@ -251,7 +371,30 @@ async def merge_results_node(state: EnrichmentState) -> EnrichmentState:
     
     context_data = {}
     confidence_scores = []
+    enrichment_source = None
     
+    # ============== Layer 2: Context Hunter (Email Receipt) ==============
+    if email_result and email_result.get("found"):
+        context_data["email_receipt"] = {
+            "found": True,
+            "subject": email_result.get("subject"),
+            "sender": email_result.get("sender"),
+            "date": email_result.get("date"),
+            "has_attachments": email_result.get("has_attachments")
+        }
+        
+        email_confidence = 0.92  # High confidence when email receipt found
+        confidence_scores.append(email_confidence)
+        
+        sender = email_result.get("sender", "unknown")
+        date = email_result.get("date", "unknown")
+        reasoning_trace.append(f"[Layer 2] Found email receipt from {sender} on {date}")
+        
+        if email_confidence >= CONFIDENCE_THRESHOLD:
+            enrichment_source = "context_hunter"
+            reasoning_trace.append(f"[Layer 2] Confidence >= {CONFIDENCE_THRESHOLD} - cascade STOP")
+    
+    # Subscription matching adds confidence
     if subscription_result:
         is_subscription = subscription_result.get("is_subscription", False)
         sub_confidence = subscription_result.get("confidence", 0.0)
@@ -266,19 +409,10 @@ async def merge_results_node(state: EnrichmentState) -> EnrichmentState:
         
         if is_subscription:
             confidence_scores.append(sub_confidence)
+            if sub_confidence >= CONFIDENCE_THRESHOLD and not enrichment_source:
+                enrichment_source = "context_hunter"
         
         reasoning_trace.append(f"[Merge] Subscription: is_subscription={is_subscription}, confidence={sub_confidence}")
-    
-    if email_result and email_result.get("found"):
-        context_data["email_receipt"] = {
-            "found": True,
-            "subject": email_result.get("subject"),
-            "sender": email_result.get("sender"),
-            "date": email_result.get("date"),
-            "has_attachments": email_result.get("has_attachments")
-        }
-        confidence_scores.append(0.85)
-        reasoning_trace.append("[Merge] Email receipt found - adding to context")
     
     if event_result and event_result.get("events"):
         context_data["events"] = event_result.get("events", [])
@@ -288,7 +422,7 @@ async def merge_results_node(state: EnrichmentState) -> EnrichmentState:
         reasoning_trace.append(f"[Merge] Events: {len(event_result.get('events', []))} nearby events")
     
     if confidence_scores:
-        ai_confidence = sum(confidence_scores) / len(confidence_scores)
+        ai_confidence = max(confidence_scores)  # Use max for cascade logic
     else:
         ai_confidence = 0.0
     
@@ -298,29 +432,38 @@ async def merge_results_node(state: EnrichmentState) -> EnrichmentState:
         context_data["review_reason"] = "Low AI confidence score"
         reasoning_trace.append(f"[Merge] Flagged for review - confidence {ai_confidence:.2f} < 0.8 threshold")
     
-    reasoning_trace.append(f"[Merge] Final confidence: {ai_confidence:.2f}")
+    reasoning_trace.append(f"[Merge] Final confidence: {ai_confidence:.2f}, source: {enrichment_source or 'pending'}")
     
     return {
         **state,
         "context_data": context_data,
         "ai_confidence": ai_confidence,
+        "enrichment_source": enrichment_source,
         "reasoning_trace": reasoning_trace
     }
 
 
 def create_enrichment_graph() -> StateGraph:
+    """
+    4-Layer Confidence-Gated Cascade Graph:
+    Layer 2: subscription_matching -> email_receipt (Context Hunter)
+    Layer 3: sherlock (if confidence still < 0.90)
+    Merge results at the end
+    """
     workflow = StateGraph(EnrichmentState)
     
     workflow.add_node("subscription_matching", subscription_matching_node)
     workflow.add_node("email_receipt", email_receipt_node)
     workflow.add_node("event_correlation", event_correlation_node)
     workflow.add_node("merge_results", merge_results_node)
+    workflow.add_node("sherlock", sherlock_node)
     
     workflow.set_entry_point("subscription_matching")
     workflow.add_edge("subscription_matching", "email_receipt")
     workflow.add_edge("email_receipt", "event_correlation")
     workflow.add_edge("event_correlation", "merge_results")
-    workflow.add_edge("merge_results", END)
+    workflow.add_edge("merge_results", "sherlock")  # Layer 3 after merge
+    workflow.add_edge("sherlock", END)
     
     return workflow.compile()
 
@@ -369,6 +512,7 @@ async def enrich_transaction(
         "reasoning_trace": [],
         "context_data": {},
         "ai_confidence": 0.0,
+        "enrichment_source": None,  # Will be set by cascade layers
         "error": None,
         "db_query_func": db_query_func,
         "db_upsert_func": db_upsert_func
@@ -392,6 +536,7 @@ async def enrich_transaction(
             context_data=final_state.get("context_data", {}),
             reasoning_trace=final_state.get("reasoning_trace", []),
             ai_confidence=final_state.get("ai_confidence", 0.0),
+            enrichment_source=final_state.get("enrichment_source"),  # Layer that achieved confidence
             needs_review=final_state.get("ai_confidence", 0.0) < 0.8,
             error=final_state.get("error")
         )
