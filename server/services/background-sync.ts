@@ -352,6 +352,13 @@ async function syncAccount(item: TrueLayerItem): Promise<void> {
         : null;
       const userCountry = user?.country || "GB";
       
+      // CRITICAL FIX: Fetch Nylas grant ID so Layer 2 (Context Hunter) can function
+      const nylasGrants = await storage.getNylasGrantsByUserId(item.userId);
+      const nylasGrantId = nylasGrants.length > 0 ? nylasGrants[0].grantId : null;
+      if (nylasGrantId) {
+        console.log(`[Background Sync] Found Nylas grant for user, enabling email receipt search`);
+      }
+      
       try {
         const enrichmentResponse = await fetch("http://localhost:8000/enrich-transactions", {
           method: "POST",
@@ -372,6 +379,7 @@ async function syncAccount(item: TrueLayerItem): Promise<void> {
             analysis_months: 3,
             account_holder_name: accountHolderName,
             country: userCountry,
+            nylas_grant_id: nylasGrantId, // CRITICAL: Pass grant ID so agentic Layer 2 can search emails
           }),
         });
 

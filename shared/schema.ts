@@ -260,6 +260,7 @@ export const enrichedTransactions = pgTable("enriched_transactions", {
   aiConfidence: real("ai_confidence").default(0.0),
   // Enrichment pipeline tracking
   enrichmentStage: text("enrichment_stage").default("pending"), // 'pending', 'ntropy_done', 'agentic_queued', 'agentic_done'
+  enrichmentSource: text("enrichment_source"), // Which layer committed the category: 'math_brain', 'ntropy', 'context_hunter', 'sherlock'
   ntropyConfidence: real("ntropy_confidence"), // Ntropy's confidence score (nullable)
   agenticConfidence: real("agentic_confidence"), // Agentic enrichment confidence (nullable)
   createdAt: timestamp("created_at").defaultNow(),
