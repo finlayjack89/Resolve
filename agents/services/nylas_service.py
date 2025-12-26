@@ -196,6 +196,32 @@ class NylasService:
         except Exception as e:
             print(f"[NylasService] Error downloading attachment: {e}")
             return None
+    
+    def list_grants(self) -> List[Dict[str, Any]]:
+        """List all grants associated with this Nylas application"""
+        if not self.client:
+            print("[NylasService] Cannot list grants - client not initialized")
+            return []
+        
+        try:
+            # Nylas v3 API - list all grants
+            response = self.client.grants.list()
+            grants = []
+            
+            if hasattr(response, 'data'):
+                for grant in response.data:
+                    grants.append({
+                        "grant_id": grant.id,
+                        "email": getattr(grant, 'email', None),
+                        "provider": getattr(grant, 'provider', 'unknown'),
+                        "status": getattr(grant, 'grant_status', 'unknown'),
+                    })
+            
+            print(f"[NylasService] Found {len(grants)} grants in Nylas")
+            return grants
+        except Exception as e:
+            print(f"[NylasService] Error listing grants: {e}")
+            return []
 
 
 _nylas_service = None

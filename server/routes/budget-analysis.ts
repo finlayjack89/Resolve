@@ -601,7 +601,7 @@ export function registerBudgetAnalysisRoutes(app: Express): void {
         return res.status(403).json({ success: false, error: "Forbidden" });
       }
       
-      const { transaction_id, enrichment_stage, agentic_confidence, is_subscription, context_data, reasoning_trace } = req.body;
+      const { transaction_id, enrichment_stage, agentic_confidence, enrichment_source, is_subscription, context_data, reasoning_trace } = req.body;
       
       if (!transaction_id) {
         return res.status(400).json({ 
@@ -613,6 +613,7 @@ export function registerBudgetAnalysisRoutes(app: Express): void {
       await storage.updateEnrichedTransactionEnrichment(transaction_id, {
         enrichmentStage: enrichment_stage,
         agenticConfidence: agentic_confidence,
+        enrichmentSource: enrichment_source,
         isSubscription: is_subscription,
         contextData: context_data,
         reasoningTrace: reasoning_trace

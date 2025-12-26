@@ -85,7 +85,7 @@ export interface IStorage {
   deleteEnrichedTransactionsByItemId(trueLayerItemId: string): Promise<void>; // NEW: per-account
   cleanupOrphanedEnrichedTransactions(userId: string): Promise<number>; // NEW: cleanup orphans
   updateEnrichedTransactionReconciliation(id: string, updates: { transactionType?: string; linkedTransactionId?: string | null; excludeFromAnalysis?: boolean }): Promise<void>; // Reconciliation updates
-  updateEnrichedTransactionEnrichment(trueLayerTransactionId: string, updates: { enrichmentStage?: string; agenticConfidence?: number | null; isSubscription?: boolean; contextData?: Record<string, any>; reasoningTrace?: string[] }): Promise<void>; // Agentic enrichment updates
+  updateEnrichedTransactionEnrichment(trueLayerTransactionId: string, updates: { enrichmentStage?: string; agenticConfidence?: number | null; enrichmentSource?: string; isSubscription?: boolean; contextData?: Record<string, any>; reasoningTrace?: string[] }): Promise<void>; // Agentic enrichment updates
   
   // Subscription Catalog methods
   getSubscriptionCatalog(): Promise<SubscriptionCatalog[]>;
@@ -470,13 +470,16 @@ export class DatabaseStorage implements IStorage {
     }
   }
   
-  async updateEnrichedTransactionEnrichment(trueLayerTransactionId: string, updates: { enrichmentStage?: string; agenticConfidence?: number | null; isSubscription?: boolean; contextData?: Record<string, any>; reasoningTrace?: string[] }): Promise<void> {
+  async updateEnrichedTransactionEnrichment(trueLayerTransactionId: string, updates: { enrichmentStage?: string; agenticConfidence?: number | null; enrichmentSource?: string; isSubscription?: boolean; contextData?: Record<string, any>; reasoningTrace?: string[] }): Promise<void> {
     const updateObj: any = {};
     if (updates.enrichmentStage !== undefined) {
       updateObj.enrichmentStage = updates.enrichmentStage;
     }
     if (updates.agenticConfidence !== undefined) {
       updateObj.agenticConfidence = updates.agenticConfidence;
+    }
+    if (updates.enrichmentSource !== undefined) {
+      updateObj.enrichmentSource = updates.enrichmentSource;
     }
     if (updates.isSubscription !== undefined) {
       updateObj.isSubscription = updates.isSubscription;
@@ -956,7 +959,7 @@ class GuestStorageWrapper implements IStorage {
     return this.dbStorage.updateEnrichedTransactionReconciliation(id, updates);
   }
   
-  async updateEnrichedTransactionEnrichment(trueLayerTransactionId: string, updates: { enrichmentStage?: string; agenticConfidence?: number | null; isSubscription?: boolean; contextData?: Record<string, any>; reasoningTrace?: string[] }): Promise<void> {
+  async updateEnrichedTransactionEnrichment(trueLayerTransactionId: string, updates: { enrichmentStage?: string; agenticConfidence?: number | null; enrichmentSource?: string; isSubscription?: boolean; contextData?: Record<string, any>; reasoningTrace?: string[] }): Promise<void> {
     return this.dbStorage.updateEnrichedTransactionEnrichment(trueLayerTransactionId, updates);
   }
   

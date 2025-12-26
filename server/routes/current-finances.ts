@@ -752,4 +752,44 @@ export function registerCurrentFinancesRoutes(app: Express): void {
       res.status(500).json({ error: "Nylas service unavailable" });
     }
   });
+
+  /**
+   * POST /api/nylas/manual-sync
+   * Manually add a Nylas grant for the current user (for cases where OAuth callback didn't save)
+   */
+  app.post("/api/nylas/manual-sync", requireAuth, async (req, res) => {
+    try {
+      const userId = (req.user as any).id;
+      const { grantId, emailAddress, provider } = req.body;
+      
+      if (!grantId || !emailAddress) {
+        return res.status(400).json({ error: "grantId and emailAddress are required" });
+      }
+      
+      console.log(`[Nylas Manual Sync] Adding grant for user ${userId}, email: ${emailAddress}`);
+      
+      // Check if grant already exists
+      const existingGrants = await storage.getNylasGrantsByUserId(userId);
+      const existingGrant = existingGrants.find(g => g.grantId === grantId);
+      
+      if (existingGrant) {
+        console.log(`[Nylas Manual Sync] Grant already exists for user ${userId}`);
+        return res.json({ success: true, message: "Grant already exists", grant: existingGrant });
+      }
+      
+      // Create the grant
+      const grant = await storage.createNylasGrant({
+        userId,
+        grantId,
+        emailAddress,
+        provider: provider || "google",
+      });
+      
+      console.log(`[Nylas Manual Sync] Successfully created grant for user ${userId}`);
+      res.json({ success: true, message: "Grant created successfully", grant });
+    } catch (error: any) {
+      console.error("[Nylas Manual Sync] Error:", error);
+      res.status(500).json({ error: error.message || "Failed to sync grant" });
+    }
+  });
 }

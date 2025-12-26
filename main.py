@@ -300,6 +300,7 @@ async def db_upsert_func(
     transaction_id: str,
     enrichment_stage: str,
     agentic_confidence: Optional[float] = None,
+    enrichment_source: Optional[str] = None,
     is_subscription: bool = False,
     context_data: Optional[Dict[str, Any]] = None,
     reasoning_trace: Optional[List[str]] = None
@@ -316,6 +317,7 @@ async def db_upsert_func(
                     "transaction_id": transaction_id,
                     "enrichment_stage": enrichment_stage,
                     "agentic_confidence": agentic_confidence,
+                    "enrichment_source": enrichment_source,
                     "is_subscription": is_subscription,
                     "context_data": context_data,
                     "reasoning_trace": reasoning_trace
@@ -457,6 +459,43 @@ async def get_user_nylas_grants(user_id: str) -> Dict[str, Any]:
         "has_grants": False,  # Express backend will override this with actual DB lookup
         "message": "Grant management handled by Express backend"
     }
+
+
+@app.get("/api/nylas/list-all-grants")
+async def list_all_nylas_grants() -> Dict[str, Any]:
+    """
+    List ALL grants from Nylas API (admin endpoint for debugging/syncing).
+    This shows grants that exist in Nylas but may not be in our database.
+    """
+    if not AGENTIC_ENRICHMENT_AVAILABLE:
+        return {
+            "success": False,
+            "error": "Agentic enrichment not available",
+            "grants": []
+        }
+    
+    service = get_nylas_service()
+    if not service.is_available():
+        return {
+            "success": False,
+            "error": "Nylas service not configured",
+            "grants": []
+        }
+    
+    try:
+        grants = service.list_grants()
+        return {
+            "success": True,
+            "grants": grants,
+            "count": len(grants)
+        }
+    except Exception as e:
+        print(f"[Nylas] Error listing all grants: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "grants": []
+        }
 
 
 # --- Agentic Enrichment Endpoints ---
