@@ -417,6 +417,13 @@ async function syncAccount(item: TrueLayerItem): Promise<void> {
             budget_category: categoryMapping.budgetGroup,
             uk_category: categoryMapping.ukCategory,
             transaction_date: tx.timestamp?.split("T")[0] || null,
+            // CASCADE FIELDS: Fallback uses deterministic rules (no AI)
+            enrichment_source: "math_brain", // Fallback is rule-based
+            ntropy_confidence: 0.7, // Lower confidence for fallback
+            reasoning_trace: ["Layer 0: Fallback - Ntropy unavailable, used deterministic categorization"],
+            exclude_from_analysis: false,
+            transaction_type: "regular",
+            linked_transaction_id: null,
           };
         });
       }
@@ -449,6 +456,13 @@ async function syncAccount(item: TrueLayerItem): Promise<void> {
           budgetCategory: categoryMapping.budgetGroup,
           ukCategory: categoryMapping.ukCategory,
           transactionDate: enriched.transaction_date || null,
+          // CASCADE FIELDS: Persist the 4-layer cascade results
+          enrichmentSource: enriched.enrichment_source || null,
+          ntropyConfidence: enriched.ntropy_confidence ?? null,
+          reasoningTrace: enriched.reasoning_trace || [],
+          excludeFromAnalysis: enriched.exclude_from_analysis || false,
+          transactionType: enriched.transaction_type || "regular",
+          linkedTransactionId: enriched.linked_transaction_id || null,
         };
       });
 
