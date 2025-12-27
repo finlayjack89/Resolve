@@ -125,14 +125,15 @@ class NylasService:
             start_date = tx_date - timedelta(days=date_window_days)
             end_date = tx_date + timedelta(days=date_window_days)
             
-            search_query = f"from:{merchant} (subject:receipt OR subject:invoice OR subject:order OR subject:confirmation)"
+            start_str = start_date.strftime("%Y/%m/%d")
+            end_str = end_date.strftime("%Y/%m/%d")
+            
+            search_query = f"from:{merchant} (subject:receipt OR subject:invoice OR subject:order OR subject:confirmation) after:{start_str} before:{end_str}"
             
             messages = self.client.messages.list(
                 grant_id,
                 query_params={
                     "search_query_native": search_query,
-                    "received_after": int(start_date.timestamp()),
-                    "received_before": int(end_date.timestamp()),
                     "limit": 5
                 }
             )
