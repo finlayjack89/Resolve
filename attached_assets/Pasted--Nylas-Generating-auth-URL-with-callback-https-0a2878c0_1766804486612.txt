@@ -1,0 +1,34 @@
+[Nylas] Generating auth URL with callback: https://0a2878c0-df6a-4aa2-9b96-f4f14ff144f9-00-3v89rkgntjhz4.riker.replit.dev/api/nylas/callback
+[Python] [NylasService] Init check - API_KEY set: True, CLIENT_ID set: True, API_URI: https://api.eu.nylas.com
+[NylasService] Nylas client initialized successfully
+[NylasService] is_available() called - returning True
+INFO:     127.0.0.1:48748 - "GET /api/nylas/auth-url?user_id=234809cc-3880-4a8c-8563-d5ac365d927a&redirect_uri=https%3A%2F%2F0a2878c0-df6a-4aa2-9b96-f4f14ff144f9-00-3v89rkgntjhz4.riker.replit.dev%2Fapi%2Fnylas%2Fcallback HTTP/1.1" 200 OK
+2:58:56 AM [express] GET /api/nylas/auth-url 304 in 116ms :: {"auth_url":"https://api.eu.nylas.com/v…
+[deserializeUser] Input type: string Value: 234809cc-3880-4a8c-8563-d5ac365d927a
+[deserializeUser] Successfully deserialized user: finlayjack1889@gmail.com
+[Nylas Callback] Received OAuth callback for user: 234809cc-3880-4a8c-8563-d5ac365d927a
+[Python] [NylasService] is_available() called - returning True
+INFO:     127.0.0.1:56154 - "POST /api/nylas/callback HTTP/1.1" 200 OK
+[Nylas Callback] Error handling callback: error: duplicate key value violates unique constraint "nylas_grants_grant_id_key"
+    at file:///home/runner/workspace/node_modules/@neondatabase/serverless/index.mjs:1345:74
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async NeonPreparedQuery.execute (/home/runner/workspace/node_modules/src/neon-serverless/session.ts:102:18)
+    at async DatabaseStorage.createNylasGrant (/home/runner/workspace/server/storage.ts:551:24)
+    at async <anonymous> (/home/runner/workspace/server/routes/current-finances.ts:714:7) {
+  length: 258,
+  severity: 'ERROR',
+  code: '23505',
+  detail: 'Key (grant_id)=(56ed5ceb-aa0d-4de0-8689-0a0f11b23bed) already exists.',
+  hint: undefined,
+  position: undefined,
+  internalPosition: undefined,
+  internalQuery: undefined,
+  where: undefined,
+  schema: 'public',
+  table: 'nylas_grants',
+  column: undefined,
+  dataType: undefined,
+  constraint: 'nylas_grants_grant_id_key',
+  file: 'nbtinsert.c',
+  line: '666',
+  routine: '_bt_check_unique'
