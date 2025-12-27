@@ -227,6 +227,7 @@ class StreamingEnrichmentRequest(schemas.BaseModel):
     analysis_months: int = 3
     account_holder_name: Optional[str] = None
     country: str = "GB"
+    nylas_grant_id: Optional[str] = None
 
 
 @app.post("/enrich-transactions-stream")
@@ -250,7 +251,8 @@ async def enrich_transactions_streaming(request: StreamingEnrichmentRequest):
                 user_id=request.user_id,
                 truelayer_item_id=request.truelayer_item_id,
                 account_holder_name=request.account_holder_name,
-                country=request.country
+                country=request.country,
+                nylas_grant_id=request.nylas_grant_id
             ):
                 yield f"data: {json.dumps(event)}\n\n"
         except Exception as e:
