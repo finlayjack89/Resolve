@@ -548,7 +548,18 @@ export class DatabaseStorage implements IStorage {
   }
   
   async createNylasGrant(grant: InsertNylasGrant): Promise<NylasGrant> {
-    const [newGrant] = await db.insert(nylasGrants).values(grant).returning();
+    // Use upsert - if grant_id already exists, update the user association and email
+    const [newGrant] = await db.insert(nylasGrants)
+      .values(grant)
+      .onConflictDoUpdate({
+        target: nylasGrants.grantId,
+        set: {
+          userId: grant.userId,
+          emailAddress: grant.emailAddress,
+          provider: grant.provider,
+        }
+      })
+      .returning();
     return newGrant;
   }
   
