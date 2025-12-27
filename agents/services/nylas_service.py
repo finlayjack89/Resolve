@@ -94,9 +94,9 @@ class NylasService:
         try:
             response = self.client.auth.exchange_code_for_token({
                 "client_id": os.environ.get("NYLAS_CLIENT_ID", ""),
-                "client_secret": os.environ.get("NYLAS_CLIENT_SECRET", ""),
                 "code": code,
-                "redirect_uri": redirect_uri
+                "redirect_uri": redirect_uri,
+                "grant_type": "authorization_code"
             })
             return {
                 "grant_id": response.grant_id,
