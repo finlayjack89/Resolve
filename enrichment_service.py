@@ -441,7 +441,19 @@ class EnrichmentService:
             enriched = self.sdk.transactions.create(**create_kwargs)
             result = enriched.model_dump() if hasattr(enriched, 'model_dump') else None
             if result:
-                merchant_name = result.get('merchant', {}).get('name', 'Unknown') if result.get('merchant') else 'Unknown'
+                # DEBUG: Log full response structure to understand Ntropy SDK v5.x format
+                import json
+                print(f"[EnrichmentService] DEBUG: Full Ntropy response keys: {list(result.keys())}")
+                print(f"[EnrichmentService] DEBUG: merchant field type: {type(result.get('merchant'))}")
+                print(f"[EnrichmentService] DEBUG: merchant value: {result.get('merchant')}")
+                print(f"[EnrichmentService] DEBUG: logo field: {result.get('logo')}")
+                print(f"[EnrichmentService] DEBUG: website field: {result.get('website')}")
+                print(f"[EnrichmentService] DEBUG: recurrence: {result.get('recurrence')}")
+                print(f"[EnrichmentService] DEBUG: recurrence_group: {result.get('recurrence_group')}")
+                
+                # In SDK v5.x, 'merchant' is a string (clean name), not an object
+                # logo and website are at top level
+                merchant_name = result.get('merchant') if isinstance(result.get('merchant'), str) else (result.get('merchant', {}).get('name', 'Unknown') if isinstance(result.get('merchant'), dict) else 'Unknown')
                 labels = result.get('labels', [])
                 print(f"[EnrichmentService] ✓ Enriched: {tx_data['description'][:30]}... → {merchant_name} [{', '.join(labels[:3])}]")
             else:
@@ -670,7 +682,21 @@ class EnrichmentService:
                                 progress_stats["agentic_queued"] += 1
                     else:
                         labels = enriched_dict.get('labels', []) or []
-                        merchant = enriched_dict.get('merchant', {}) or {}
+                        
+                        # Ntropy SDK v5.x: 'merchant' is a STRING (clean name), not an object
+                        # logo and website are at TOP LEVEL, not nested inside merchant
+                        merchant_raw = enriched_dict.get('merchant')
+                        if isinstance(merchant_raw, dict):
+                            # Handle legacy dict format just in case
+                            merchant_name = merchant_raw.get('name')
+                            logo_url = merchant_raw.get('logo') or merchant_raw.get('logo_url')
+                            website_url = merchant_raw.get('website') or merchant_raw.get('website_url')
+                        else:
+                            # SDK v5.x: merchant is a string, logo/website at top level
+                            merchant_name = merchant_raw if isinstance(merchant_raw, str) else None
+                            logo_url = enriched_dict.get('logo')
+                            website_url = enriched_dict.get('website')
+                        
                         recurrence = enriched_dict.get('recurrence', {}) or {}
                         recurrence_group = enriched_dict.get('recurrence_group', {}) or {}
                         
@@ -683,7 +709,7 @@ class EnrichmentService:
                         # Calculate confidence with ambiguity penalties
                         recurrence_confidence = recurrence_group.get('confidence')
                         ntropy_confidence, penalty_reason = self._calculate_ntropy_confidence(
-                            merchant.get('name'),
+                            merchant_name,
                             labels,
                             recurrence_confidence
                         )
@@ -706,9 +732,9 @@ class EnrichmentService:
                         result = NtropyOutputModel(
                             transaction_id=norm_tx.transaction_id,
                             original_description=norm_tx.description,
-                            merchant_clean_name=merchant.get('name'),
-                            merchant_logo_url=merchant.get('logo'),
-                            merchant_website_url=merchant.get('website'),
+                            merchant_clean_name=merchant_name,
+                            merchant_logo_url=logo_url,
+                            merchant_website_url=website_url,
                             labels=labels,
                             is_recurring=recurrence.get('is_recurring', False),
                             recurrence_frequency=recurrence.get('frequency'),
@@ -733,8 +759,8 @@ class EnrichmentService:
                             if not skip_agentic:
                                 ntropy_result_dict = {
                                     "labels": labels,
-                                    "merchant_clean_name": merchant.get('name'),
-                                    "merchant": merchant,
+                                    "merchant_clean_name": merchant_name,
+                                    "merchant": {"name": merchant_name, "logo": logo_url, "website": website_url},
                                     "is_recurring": recurrence.get('is_recurring', False),
                                     "ntropy_confidence": ntropy_confidence
                                 }
@@ -1112,12 +1138,21 @@ class EnrichmentService:
                     
                     # enriched_dict is already a dict from _enrich_concurrent
                     labels = enriched_dict.get('labels', []) or []
-                    merchant = enriched_dict.get('merchant', {}) or {}
                     recurrence = enriched_dict.get('recurrence', {}) or {}
                     
-                    merchant_name = merchant.get('name')
-                    logo_url = merchant.get('logo')
-                    website_url = merchant.get('website')
+                    # Ntropy SDK v5.x: 'merchant' is a STRING (clean name), not an object
+                    # logo and website are at TOP LEVEL, not nested inside merchant
+                    merchant_raw = enriched_dict.get('merchant')
+                    if isinstance(merchant_raw, dict):
+                        # Handle legacy dict format just in case
+                        merchant_name = merchant_raw.get('name')
+                        logo_url = merchant_raw.get('logo') or merchant_raw.get('logo_url')
+                        website_url = merchant_raw.get('website') or merchant_raw.get('website_url')
+                    else:
+                        # SDK v5.x: merchant is a string, logo/website at top level
+                        merchant_name = merchant_raw if isinstance(merchant_raw, str) else None
+                        logo_url = enriched_dict.get('logo')
+                        website_url = enriched_dict.get('website')
                     
                     is_recurring = recurrence.get('is_recurring', False)
                     recurrence_freq = recurrence.get('frequency')
