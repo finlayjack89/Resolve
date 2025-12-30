@@ -472,21 +472,36 @@ class EnrichmentService:
             enriched = self.sdk.transactions.create(**create_kwargs)
             result = enriched.model_dump() if hasattr(enriched, 'model_dump') else None
             if result:
-                # DEBUG: Log full response structure to understand Ntropy SDK v5.x format
-                import json
-                print(f"[EnrichmentService] DEBUG: Full Ntropy response keys: {list(result.keys())}")
-                print(f"[EnrichmentService] DEBUG: merchant field type: {type(result.get('merchant'))}")
-                print(f"[EnrichmentService] DEBUG: merchant value: {result.get('merchant')}")
-                print(f"[EnrichmentService] DEBUG: logo field: {result.get('logo')}")
-                print(f"[EnrichmentService] DEBUG: website field: {result.get('website')}")
-                print(f"[EnrichmentService] DEBUG: recurrence: {result.get('recurrence')}")
-                print(f"[EnrichmentService] DEBUG: recurrence_group: {result.get('recurrence_group')}")
+                # Ntropy SDK v5.x response structure (ACTUAL, confirmed via debug):
+                # - 'entities': dict with 'counterparty' (dict) and 'intermediaries' (list) keys
+                #   - counterparty: {id, name, website, logo, mccs, type}
+                # - 'categories': dict with 'general' (string) and 'accounting' (string or None) keys
+                # - 'merchant' at top level is ALWAYS None - use entities.counterparty.name instead
+                # - 'logo'/'website' at top level are ALWAYS None - use entities.counterparty instead
                 
-                # In SDK v5.x, 'merchant' is a string (clean name), not an object
-                # logo and website are at top level
-                merchant_name = result.get('merchant') if isinstance(result.get('merchant'), str) else (result.get('merchant', {}).get('name', 'Unknown') if isinstance(result.get('merchant'), dict) else 'Unknown')
-                labels = result.get('labels', [])
-                print(f"[EnrichmentService] ✓ Enriched: {tx_data['description'][:30]}... → {merchant_name} [{', '.join(labels[:3])}]")
+                entities = result.get('entities') or {}
+                counterparty = entities.get('counterparty') or {}
+                categories = result.get('categories') or {}
+                
+                # Extract merchant info from counterparty entity
+                merchant_name = counterparty.get('name') if isinstance(counterparty, dict) else None
+                logo_url = counterparty.get('logo') if isinstance(counterparty, dict) else None
+                website_url = counterparty.get('website') if isinstance(counterparty, dict) else None
+                
+                # Extract category - it's a dict with 'general' key, not a list
+                general_category = categories.get('general') if isinstance(categories, dict) else None
+                
+                print(f"[EnrichmentService] ✓ Enriched: {tx_data['description'][:30]}... → {merchant_name} [{general_category or 'no category'}]")
+                
+                # Normalize the result to a consistent format for downstream processing
+                # This makes it compatible with the rest of the codebase
+                result['_normalized'] = {
+                    'merchant_name': merchant_name,
+                    'logo_url': logo_url,
+                    'website_url': website_url,
+                    'category': general_category,
+                    'labels': [general_category] if general_category else [],
+                }
             else:
                 print(f"[EnrichmentService] ⚠ No result from Ntropy for {tx_data['id'][:20]}...")
             return result
@@ -712,24 +727,19 @@ class EnrichmentService:
                             ):
                                 progress_stats["agentic_queued"] += 1
                     else:
-                        labels = enriched_dict.get('labels', []) or []
+                        # ============== Ntropy SDK v5.x Response Parsing ==============
+                        # The SDK response has entities (counterparty) and categories (general/accounting)
+                        # We normalize this in _enrich_single_sync and store in _normalized
+                        normalized = enriched_dict.get('_normalized', {})
                         
-                        # Ntropy SDK v5.x: 'merchant' is a STRING (clean name), not an object
-                        # logo and website are at TOP LEVEL, not nested inside merchant
-                        merchant_raw = enriched_dict.get('merchant')
-                        if isinstance(merchant_raw, dict):
-                            # Handle legacy dict format just in case
-                            merchant_name = merchant_raw.get('name')
-                            logo_url = merchant_raw.get('logo') or merchant_raw.get('logo_url')
-                            website_url = merchant_raw.get('website') or merchant_raw.get('website_url')
-                        else:
-                            # SDK v5.x: merchant is a string, logo/website at top level
-                            merchant_name = merchant_raw if isinstance(merchant_raw, str) else None
-                            logo_url = enriched_dict.get('logo')
-                            website_url = enriched_dict.get('website')
+                        # Get merchant info from normalized structure
+                        merchant_name = normalized.get('merchant_name')
+                        logo_url = normalized.get('logo_url')
+                        website_url = normalized.get('website_url')
+                        general_category = normalized.get('category')
+                        labels = normalized.get('labels', [])
                         
-                        # Ntropy SDK v5.x: 'recurrence' is an ENUM string (one-off, recurring, subscription)
-                        # NOT a dict with is_recurring field
+                        # Recurrence is still at top level
                         recurrence_value = enriched_dict.get('recurrence')
                         is_recurring = recurrence_value in ('recurring', 'subscription') if recurrence_value else False
                         
@@ -1177,24 +1187,19 @@ class EnrichmentService:
                         results.append(self._create_fallback_output(norm_tx))
                         continue
                     
-                    # enriched_dict is already a dict from _enrich_concurrent
-                    labels = enriched_dict.get('labels', []) or []
+                    # ============== Ntropy SDK v5.x Response Parsing ==============
+                    # The SDK response has entities (counterparty) and categories (general/accounting)
+                    # We normalize this in _enrich_single_sync and store in _normalized
+                    normalized_data = enriched_dict.get('_normalized', {})
                     
-                    # Ntropy SDK v5.x: 'merchant' is a STRING (clean name), not an object
-                    # logo and website are at TOP LEVEL, not nested inside merchant
-                    merchant_raw = enriched_dict.get('merchant')
-                    if isinstance(merchant_raw, dict):
-                        # Handle legacy dict format just in case
-                        merchant_name = merchant_raw.get('name')
-                        logo_url = merchant_raw.get('logo') or merchant_raw.get('logo_url')
-                        website_url = merchant_raw.get('website') or merchant_raw.get('website_url')
-                    else:
-                        # SDK v5.x: merchant is a string, logo/website at top level
-                        merchant_name = merchant_raw if isinstance(merchant_raw, str) else None
-                        logo_url = enriched_dict.get('logo')
-                        website_url = enriched_dict.get('website')
+                    # Get merchant info from normalized structure
+                    merchant_name = normalized_data.get('merchant_name')
+                    logo_url = normalized_data.get('logo_url')
+                    website_url = normalized_data.get('website_url')
+                    general_category = normalized_data.get('category')
+                    labels = normalized_data.get('labels', [])
                     
-                    # Ntropy SDK v5.x: 'recurrence' is an ENUM string (one-off, recurring, subscription)
+                    # Recurrence is still at top level
                     recurrence_value = enriched_dict.get('recurrence')
                     is_recurring = recurrence_value in ('recurring', 'subscription') if recurrence_value else False
                     recurrence_group = enriched_dict.get('recurrence_group') or {}

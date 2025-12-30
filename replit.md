@@ -18,11 +18,16 @@ Preferred communication style: Simple, everyday language.
 - **API Structure**: RESTful endpoints for authentication, accounts, budget, preferences, plans, and integrations (TrueLayer, lender rules, statement guidance).
 - **Authentication & Security**: Scrypt password hashing, express-session, AES-256-GCM encryption for TrueLayer tokens.
 - **TrueLayer Integration**: Handles OAuth2 flow, encrypted token storage, and transaction fetching for budget analysis.
-- **4-Layer Confidence-Gated Cascade**: Sequential enrichment pipeline with 0.90 confidence threshold that stops when confident:
+- **4-Layer Confidence-Gated Cascade**: Sequential enrichment pipeline with 0.80 confidence threshold that stops when confident:
   - **Layer 0 (Math Brain/Ghost Pair)**: Detects internal transfers (same amount, opposite directions, within 2 days). Sets confidence=1.0, enrichment_source="math_brain", excludes from analysis. STOPS cascade.
-  - **Layer 1 (Ntropy)**: Merchant enrichment with ambiguity penalties (Amazon/PayPal/Tesco/eBay = 0.5x, "General Merchandise" = 0.6x). If ntropy_confidence >= 0.90, sets enrichment_source="ntropy" and STOPS cascade.
-  - **Layer 2 (Context Hunter)**: Nylas email search + Mindee OCR for receipt data. If confidence >= 0.90, sets enrichment_source="context_hunter" and STOPS.
+  - **Layer 1 (Ntropy)**: Merchant enrichment via Ntropy SDK v5.x with ambiguity penalties (Amazon/PayPal/Tesco/eBay = 0.5x, "General Merchandise" = 0.6x). If ntropy_confidence >= 0.80, sets enrichment_source="ntropy" and STOPS cascade.
+  - **Layer 2 (Context Hunter)**: Nylas email search + Mindee OCR for receipt data. If confidence >= 0.80, sets enrichment_source="context_hunter" and STOPS.
   - **Layer 3 (Sherlock)**: Claude claude-sonnet-4-20250514 + web search for opaque transactions. Final categorization with enrichment_source="sherlock".
+- **Ntropy SDK v5.x Response Structure**: The SDK returns entities/categories dicts instead of flat fields:
+  - `entities.counterparty`: dict with `id`, `name`, `website`, `logo`, `mccs`, `type`
+  - `categories.general`: string category name (e.g., "digital content and streaming", "groceries")
+  - Top-level `merchant`, `logo`, `website` fields are always None - must use `entities.counterparty` instead
+  - `recurrence`: enum string ('one-off', 'recurring', 'subscription')
 - **Cascade Field Tracking**: Each transaction stores enrichment_source, ntropy_confidence, reasoning_trace (array of layer decisions), and exclude_from_analysis.
 - **Transaction Reconciliation**: Ghost Pair detection (Layer 0) now runs FIRST in cascade, detecting inter-account transfers before Ntropy. Refunds/reversals detected via keyword matching + merchant/amount/date fuzzy matching.
 - **AI Research System**: Claude Sonnet 4.5 for automated lender rule discovery with human verification and intelligent caching.
