@@ -136,7 +136,9 @@ AMBIGUITY_PENALTIES = {
 }
 
 # Confidence threshold for stopping the cascade
-CONFIDENCE_THRESHOLD = 0.90
+# Lowered to 0.80 to respect Ntropy as primary enrichment layer
+# Claude should only enhance transactions where Ntropy is uncertain
+CONFIDENCE_THRESHOLD = 0.80
 
 
 # ============== Enrichment Service ==============
@@ -303,22 +305,51 @@ class EnrichmentService:
         self,
         merchant_name: Optional[str],
         labels: List[str],
-        recurrence_confidence: Optional[float] = None
+        recurrence_confidence: Optional[float] = None,
+        is_recurring: bool = False
     ) -> tuple[float, Optional[str]]:
         """
         Layer 1: Calculate Ntropy confidence with ambiguity penalties
         
+        Ntropy SDK v5.x does NOT return a confidence score directly.
+        We derive confidence from the quality/specificity of returned data:
+        - Base: 0.7 (Ntropy returned something)
+        - +0.1 if merchant name was extracted
+        - +0.1 if specific labels (not generic) were returned
+        - +0.1 if recurrence was detected
+        - Then apply ambiguity penalties for generic merchants/labels
+        
         Returns:
             Tuple of (final_confidence, penalty_reason or None)
         """
-        # Base confidence from recurrence or default
-        base_confidence = recurrence_confidence if recurrence_confidence is not None else 0.8
+        # Build confidence from Ntropy response quality
+        # Start with base of 0.7 (Ntropy processed successfully)
+        base_confidence = 0.7
+        
+        # Add confidence for having a merchant name
+        if merchant_name and len(merchant_name) >= 3:
+            base_confidence += 0.1
+        
+        # Add confidence for having specific labels (not just generic ones)
+        generic_labels = {'retail', 'services', 'general', 'other', 'miscellaneous', 
+                         'purchase', 'payment', 'transfer', 'unknown', 'uncategorized'}
+        if labels:
+            specific_labels = [l for l in labels if l.lower() not in generic_labels]
+            if specific_labels:
+                base_confidence += 0.1
+        
+        # Add confidence for recurrence detection
+        if is_recurring:
+            base_confidence += 0.1
+        
+        # Cap base at 1.0
+        base_confidence = min(base_confidence, 1.0)
         
         # Find lowest applicable penalty
         lowest_penalty = 1.0
         penalty_reason = None
         
-        # Check merchant name
+        # Check merchant name for ambiguity
         if merchant_name:
             merchant_lower = merchant_name.lower()
             for ambiguous_name, penalty in AMBIGUITY_PENALTIES.items():
@@ -327,7 +358,7 @@ class EnrichmentService:
                         lowest_penalty = penalty
                         penalty_reason = f"ambiguous merchant: {ambiguous_name}"
         
-        # Check labels
+        # Check labels for ambiguity
         for label in labels:
             label_lower = label.lower()
             for ambiguous_label, penalty in AMBIGUITY_PENALTIES.items():
@@ -697,21 +728,27 @@ class EnrichmentService:
                             logo_url = enriched_dict.get('logo')
                             website_url = enriched_dict.get('website')
                         
-                        recurrence = enriched_dict.get('recurrence', {}) or {}
-                        recurrence_group = enriched_dict.get('recurrence_group', {}) or {}
+                        # Ntropy SDK v5.x: 'recurrence' is an ENUM string (one-off, recurring, subscription)
+                        # NOT a dict with is_recurring field
+                        recurrence_value = enriched_dict.get('recurrence')
+                        is_recurring = recurrence_value in ('recurring', 'subscription') if recurrence_value else False
+                        
+                        # recurrence_group contains periodicity info if recurring
+                        recurrence_group = enriched_dict.get('recurrence_group') or {}
                         
                         budget_category = self.classify_transaction(
                             labels=labels,
-                            is_recurring=recurrence.get('is_recurring', False),
+                            is_recurring=is_recurring,
                             entry_type=entry_type
                         )
                         
-                        # Calculate confidence with ambiguity penalties
-                        recurrence_confidence = recurrence_group.get('confidence')
+                        # Calculate confidence based on Ntropy response quality
+                        # (Ntropy SDK v5.x doesn't provide explicit confidence score)
                         ntropy_confidence, penalty_reason = self._calculate_ntropy_confidence(
                             merchant_name,
                             labels,
-                            recurrence_confidence
+                            recurrence_confidence=None,  # No longer used
+                            is_recurring=is_recurring
                         )
                         
                         # Build reasoning trace
@@ -729,6 +766,10 @@ class EnrichmentService:
                             reasoning_trace.append(f"Layer 1: Confidence >= {CONFIDENCE_THRESHOLD} - cascade STOP")
                             high_confidence_count += 1
                         
+                        # Extract recurrence details from recurrence_group
+                        recurrence_frequency = recurrence_group.get('periodicity') if recurrence_group else None
+                        recurrence_day = None  # SDK v5.x doesn't provide day_of_month directly
+                        
                         result = NtropyOutputModel(
                             transaction_id=norm_tx.transaction_id,
                             original_description=norm_tx.description,
@@ -736,9 +777,9 @@ class EnrichmentService:
                             merchant_logo_url=logo_url,
                             merchant_website_url=website_url,
                             labels=labels,
-                            is_recurring=recurrence.get('is_recurring', False),
-                            recurrence_frequency=recurrence.get('frequency'),
-                            recurrence_day=recurrence.get('day_of_month'),
+                            is_recurring=is_recurring,
+                            recurrence_frequency=recurrence_frequency,
+                            recurrence_day=recurrence_day,
                             amount_cents=int(norm_tx.amount * 100),
                             entry_type=entry_type,
                             budget_category=budget_category,
@@ -761,7 +802,7 @@ class EnrichmentService:
                                     "labels": labels,
                                     "merchant_clean_name": merchant_name,
                                     "merchant": {"name": merchant_name, "logo": logo_url, "website": website_url},
-                                    "is_recurring": recurrence.get('is_recurring', False),
+                                    "is_recurring": is_recurring,
                                     "ntropy_confidence": ntropy_confidence
                                 }
                                 
@@ -1138,7 +1179,6 @@ class EnrichmentService:
                     
                     # enriched_dict is already a dict from _enrich_concurrent
                     labels = enriched_dict.get('labels', []) or []
-                    recurrence = enriched_dict.get('recurrence', {}) or {}
                     
                     # Ntropy SDK v5.x: 'merchant' is a STRING (clean name), not an object
                     # logo and website are at TOP LEVEL, not nested inside merchant
@@ -1154,9 +1194,12 @@ class EnrichmentService:
                         logo_url = enriched_dict.get('logo')
                         website_url = enriched_dict.get('website')
                     
-                    is_recurring = recurrence.get('is_recurring', False)
-                    recurrence_freq = recurrence.get('frequency')
-                    recurrence_day = recurrence.get('day_of_month')
+                    # Ntropy SDK v5.x: 'recurrence' is an ENUM string (one-off, recurring, subscription)
+                    recurrence_value = enriched_dict.get('recurrence')
+                    is_recurring = recurrence_value in ('recurring', 'subscription') if recurrence_value else False
+                    recurrence_group = enriched_dict.get('recurrence_group') or {}
+                    recurrence_freq = recurrence_group.get('periodicity') if recurrence_group else None
+                    recurrence_day = None  # SDK v5.x doesn't provide day_of_month
                     
                     entry_type = self._determine_entry_type(norm_tx)
                     

@@ -79,7 +79,9 @@ AMBIGUOUS_LABELS = [
 ]
 
 # Confidence threshold for 4-layer cascade
-CONFIDENCE_THRESHOLD = 0.90
+# Lowered to 0.80 to respect Ntropy as primary enrichment layer
+# Claude should only enhance transactions where Ntropy is uncertain
+CONFIDENCE_THRESHOLD = 0.80
 
 
 def needs_agentic_enrichment(
