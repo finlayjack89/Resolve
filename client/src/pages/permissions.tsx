@@ -14,11 +14,13 @@ export default function PermissionsPage() {
     connected_email?: string;
     message: string;
   }>({
-    queryKey: ["/api/nylas/grants", user?.id],
+    queryKey: ["/api/nylas/grants"],
     enabled: !!user?.id && user.id !== "guest-user",
+    refetchOnWindowFocus: true,
+    staleTime: 0,
   });
 
-  const isConnected = grantStatus?.has_grants;
+  const isConnected = !!grantStatus?.has_grants;
 
   return (
     <div className="container mx-auto max-w-4xl px-4 py-8" data-testid="page-permissions">

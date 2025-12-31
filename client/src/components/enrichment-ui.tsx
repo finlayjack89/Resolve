@@ -22,10 +22,13 @@ export function ConnectEmailButton({ onConnected, className }: ConnectEmailButto
   const { data: grantStatus, isLoading: isCheckingGrants } = useQuery<{
     nylas_available: boolean;
     has_grants: boolean;
+    connected_email?: string;
     message: string;
   }>({
-    queryKey: ["/api/nylas/grants", user?.id],
+    queryKey: ["/api/nylas/grants"],
     enabled: !!user?.id && user.id !== "guest-user",
+    refetchOnWindowFocus: true,
+    staleTime: 0,
   });
 
   const connectEmailMutation = useMutation({
@@ -77,9 +80,9 @@ export function ConnectEmailButton({ onConnected, className }: ConnectEmailButto
 
   if (grantStatus?.has_grants) {
     return (
-      <Badge variant="outline" className={`border-green-500 text-green-600 dark:text-green-400 bg-green-50 dark:bg-green-950/30 ${className}`} data-testid="badge-email-connected">
-        <span className="h-2 w-2 rounded-full bg-green-500 mr-1.5" />
-        Email Connected
+      <Badge variant="outline" className={`border-green-500 text-green-600 dark:text-green-400 bg-green-50 dark:bg-green-950/30 font-medium ${className}`} data-testid="badge-email-connected">
+        <span className="h-2 w-2 rounded-full bg-green-500 mr-2 animate-pulse" />
+        Connected: {grantStatus?.connected_email}
       </Badge>
     );
   }
