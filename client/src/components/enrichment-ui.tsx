@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Progress } from "@/components/ui/progress";
-import { Mail, Sparkles, AlertTriangle, Check, ExternalLink, Loader2, Receipt, Search } from "lucide-react";
+import { Mail, Sparkles, AlertTriangle, ExternalLink, Loader2, Receipt, Search } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
 import { useAuth } from "@/lib/auth-context";
@@ -77,8 +77,8 @@ export function ConnectEmailButton({ onConnected, className }: ConnectEmailButto
 
   if (grantStatus?.has_grants) {
     return (
-      <Badge variant="secondary" className={className} data-testid="badge-email-connected">
-        <Check className="h-3 w-3 mr-1" />
+      <Badge variant="outline" className={`border-green-500 text-green-600 dark:text-green-400 bg-green-50 dark:bg-green-950/30 ${className}`} data-testid="badge-email-connected">
+        <span className="h-2 w-2 rounded-full bg-green-500 mr-1.5" />
         Email Connected
       </Badge>
     );
