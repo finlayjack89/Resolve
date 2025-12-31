@@ -40,9 +40,9 @@ export default function PermissionsPage() {
                 <CardTitle className="text-xl">Allow Context Hunting</CardTitle>
                 <div className="mt-2">
                   {isConnected ? (
-                    <Badge variant="outline" className="border-green-500 text-green-600 dark:text-green-400 bg-green-50 dark:bg-green-950/30" data-testid="badge-status-connected">
-                      <span className="h-2 w-2 rounded-full bg-green-500 mr-1.5 animate-pulse" />
-                      Connected
+                    <Badge variant="outline" className="border-green-500 text-green-600 dark:text-green-400 bg-green-50 dark:bg-green-950/30 font-medium" data-testid="badge-status-connected">
+                      <span className="h-2 w-2 rounded-full bg-green-500 mr-2 animate-pulse" />
+                      Connected: {grantStatus?.connected_email}
                     </Badge>
                   ) : (
                     <Badge variant="outline" data-testid="badge-status-not-connected">
