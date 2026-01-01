@@ -86,6 +86,7 @@ export interface IStorage {
   cleanupOrphanedEnrichedTransactions(userId: string): Promise<number>; // NEW: cleanup orphans
   updateEnrichedTransactionReconciliation(id: string, updates: { transactionType?: string; linkedTransactionId?: string | null; excludeFromAnalysis?: boolean }): Promise<void>; // Reconciliation updates
   updateEnrichedTransactionEnrichment(trueLayerTransactionId: string, updates: { enrichmentStage?: string; agenticConfidence?: number | null; enrichmentSource?: string; isSubscription?: boolean; contextData?: Record<string, any>; reasoningTrace?: string[] }): Promise<void>; // Agentic enrichment updates
+  updateEnrichedTransaction(id: string, updates: Partial<EnrichedTransaction>): Promise<void>; // General enriched transaction updates for re-enrichment
   
   // Subscription Catalog methods
   getSubscriptionCatalog(): Promise<SubscriptionCatalog[]>;
@@ -492,6 +493,29 @@ export class DatabaseStorage implements IStorage {
     }
     if (Object.keys(updateObj).length > 0) {
       await db.update(enrichedTransactions).set(updateObj).where(eq(enrichedTransactions.trueLayerTransactionId, trueLayerTransactionId));
+    }
+  }
+  
+  async updateEnrichedTransaction(id: string, updates: Partial<EnrichedTransaction>): Promise<void> {
+    const updateObj: any = {};
+    if (updates.merchantCleanName !== undefined) updateObj.merchantCleanName = updates.merchantCleanName;
+    if (updates.merchantLogoUrl !== undefined) updateObj.merchantLogoUrl = updates.merchantLogoUrl;
+    if (updates.merchantWebsiteUrl !== undefined) updateObj.merchantWebsiteUrl = updates.merchantWebsiteUrl;
+    if (updates.labels !== undefined) updateObj.labels = updates.labels;
+    if (updates.isRecurring !== undefined) updateObj.isRecurring = updates.isRecurring;
+    if (updates.recurrenceFrequency !== undefined) updateObj.recurrenceFrequency = updates.recurrenceFrequency;
+    if (updates.budgetCategory !== undefined) updateObj.budgetCategory = updates.budgetCategory;
+    if (updates.ukCategory !== undefined) updateObj.ukCategory = updates.ukCategory;
+    if (updates.enrichmentSource !== undefined) updateObj.enrichmentSource = updates.enrichmentSource;
+    if (updates.ntropyConfidence !== undefined) updateObj.ntropyConfidence = updates.ntropyConfidence;
+    if (updates.reasoningTrace !== undefined) updateObj.reasoningTrace = updates.reasoningTrace;
+    if (updates.excludeFromAnalysis !== undefined) updateObj.excludeFromAnalysis = updates.excludeFromAnalysis;
+    if (updates.transactionType !== undefined) updateObj.transactionType = updates.transactionType;
+    if (updates.linkedTransactionId !== undefined) updateObj.linkedTransactionId = updates.linkedTransactionId;
+    if (updates.enrichmentStage !== undefined) updateObj.enrichmentStage = updates.enrichmentStage;
+    if (updates.agenticConfidence !== undefined) updateObj.agenticConfidence = updates.agenticConfidence;
+    if (Object.keys(updateObj).length > 0) {
+      await db.update(enrichedTransactions).set(updateObj).where(eq(enrichedTransactions.id, id));
     }
   }
   
@@ -972,6 +996,10 @@ class GuestStorageWrapper implements IStorage {
   
   async updateEnrichedTransactionEnrichment(trueLayerTransactionId: string, updates: { enrichmentStage?: string; agenticConfidence?: number | null; enrichmentSource?: string; isSubscription?: boolean; contextData?: Record<string, any>; reasoningTrace?: string[] }): Promise<void> {
     return this.dbStorage.updateEnrichedTransactionEnrichment(trueLayerTransactionId, updates);
+  }
+  
+  async updateEnrichedTransaction(id: string, updates: Partial<EnrichedTransaction>): Promise<void> {
+    return this.dbStorage.updateEnrichedTransaction(id, updates);
   }
   
   // Subscription Catalog methods - pass through to database (shared data)

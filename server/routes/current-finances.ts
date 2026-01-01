@@ -23,7 +23,7 @@ import {
   isDiscretionaryCategory,
   isDebtPaymentCategory,
 } from "../services/category-mapping";
-import { triggerAccountSync, isAccountSyncing } from "../services/background-sync";
+import { triggerAccountSync, isAccountSyncing, recalibrateAccountBudget } from "../services/background-sync";
 
 // Response types for the Current Finances API
 export interface ConnectedAccountSummary {
@@ -449,6 +449,214 @@ export function registerCurrentFinancesRoutes(app: Express): void {
     } catch (error: any) {
       console.error("[Current Finances] Error analyzing account:", error);
       res.status(500).json({ message: "Failed to analyze account" });
+    }
+  });
+
+  /**
+   * POST /api/current-finances/account/:id/re-enrich
+   * Re-processes existing transactions through the full enrichment cascade (Layers 0-4)
+   * without requiring a TrueLayer connection. This is useful for:
+   * - Testing enrichment changes
+   * - Re-analyzing with updated confidence logic
+   * - Triggering Nylas context hunting for low-confidence transactions
+   */
+  app.post("/api/current-finances/account/:id/re-enrich", requireAuth, async (req, res) => {
+    try {
+      const userId = (req.user as any).id;
+      const accountId = req.params.id;
+      
+      const item = await storage.getTrueLayerItemById(accountId);
+      
+      if (!item) {
+        return res.status(404).json({ message: "Account not found" });
+      }
+      
+      if (item.userId !== userId) {
+        return res.status(403).json({ message: "Access denied" });
+      }
+
+      // Check if this account is already syncing
+      if (isAccountSyncing(accountId)) {
+        return res.status(409).json({ 
+          message: "Account is already being processed. Please wait and try again.",
+          syncing: true 
+        });
+      }
+
+      console.log(`[Current Finances] Starting re-enrichment for account ${accountId}`);
+
+      // Step 1: Get existing enriched transactions from the database
+      const existingTransactions = await storage.getEnrichedTransactionsByItemId(accountId);
+      
+      if (existingTransactions.length === 0) {
+        return res.status(400).json({ 
+          message: "No transactions found to re-enrich. Please sync with bank first." 
+        });
+      }
+
+      console.log(`[Current Finances] Found ${existingTransactions.length} transactions to re-enrich`);
+
+      // Step 2: Convert database transactions to format expected by enrichment service
+      // The enrichment service expects TrueLayer-like format
+      const transactionsForEnrichment = existingTransactions.map(tx => ({
+        transaction_id: tx.trueLayerTransactionId,
+        description: tx.originalDescription,
+        amount: tx.amountCents / 100, // Convert cents back to decimal
+        currency: tx.currency || "GBP",
+        timestamp: tx.transactionDate ? new Date(tx.transactionDate).toISOString() : new Date().toISOString(),
+        transaction_type: tx.entryType === "incoming" ? "CREDIT" : "DEBIT",
+        transaction_classification: tx.labels || [],
+        merchant_name: tx.merchantCleanName || null,
+      }));
+
+      // Step 3: Get user's Nylas grant for context hunting
+      const nylasGrants = await storage.getNylasGrantsByUserId(userId);
+      const nylasGrantId = nylasGrants.length > 0 ? nylasGrants[0].grantId : null;
+
+      // Get user info for account holder name
+      const user = await storage.getUser(userId);
+      const accountHolderName = user?.firstName && user?.lastName 
+        ? `${user.firstName} ${user.lastName}` 
+        : undefined;
+
+      // Step 4: Call the Python enrichment service with streaming for progress
+      const PYTHON_API_URL = process.env.PYTHON_API_URL || "http://localhost:8000";
+      
+      console.log(`[Current Finances] Sending ${transactionsForEnrichment.length} transactions to enrichment service`);
+      
+      const enrichmentResponse = await fetch(`${PYTHON_API_URL}/enrich-transactions-stream`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          transactions: transactionsForEnrichment,
+          user_id: userId,
+          truelayer_item_id: accountId,
+          analysis_months: 3,
+          account_holder_name: accountHolderName,
+          country: user?.country || "GB",
+          nylas_grant_id: nylasGrantId, // Pass Nylas grant for Layer 2 context hunting
+        }),
+      });
+
+      if (!enrichmentResponse.ok) {
+        console.error(`[Current Finances] Enrichment service failed: ${enrichmentResponse.status}`);
+        return res.status(500).json({ 
+          message: "Enrichment service unavailable. Please try again later." 
+        });
+      }
+
+      // Process streaming response to get final result
+      const reader = enrichmentResponse.body?.getReader();
+      if (!reader) {
+        return res.status(500).json({ message: "Failed to read enrichment response" });
+      }
+
+      let enrichedData: any = null;
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n\n");
+        buffer = lines.pop() || "";
+
+        for (const line of lines) {
+          if (line.startsWith("data: ")) {
+            try {
+              const event = JSON.parse(line.slice(6));
+              if (event.type === "complete") {
+                enrichedData = event.result;
+              } else if (event.type === "error") {
+                console.error(`[Current Finances] Enrichment error: ${event.message}`);
+              }
+            } catch (e) {
+              // Ignore parse errors for partial data
+            }
+          }
+        }
+      }
+
+      if (!enrichedData || !enrichedData.enriched_transactions) {
+        return res.status(500).json({ 
+          message: "Enrichment completed but no results returned" 
+        });
+      }
+
+      console.log(`[Current Finances] Enrichment complete. Received ${enrichedData.enriched_transactions.length} enriched transactions`);
+
+      // Step 5: Update existing transactions with new enrichment data
+      // We update in-place rather than delete/recreate to preserve IDs
+      let updatedCount = 0;
+      let failedCount = 0;
+      
+      for (const enriched of enrichedData.enriched_transactions) {
+        const existingTx = existingTransactions.find(
+          tx => tx.trueLayerTransactionId === enriched.transaction_id
+        );
+        
+        if (existingTx) {
+          try {
+            await storage.updateEnrichedTransaction(existingTx.id, {
+              // Core merchant/category fields
+              merchantCleanName: enriched.merchant_clean_name || existingTx.merchantCleanName,
+              merchantLogoUrl: enriched.merchant_logo_url || existingTx.merchantLogoUrl,
+              merchantWebsiteUrl: enriched.merchant_website_url || existingTx.merchantWebsiteUrl,
+              labels: enriched.labels || existingTx.labels,
+              isRecurring: enriched.is_recurring ?? existingTx.isRecurring,
+              recurrenceFrequency: enriched.recurrence_frequency || existingTx.recurrenceFrequency,
+              budgetCategory: enriched.budget_category || existingTx.budgetCategory,
+              ukCategory: enriched.uk_category || existingTx.ukCategory,
+              // Cascade tracking fields - FULL pipeline state
+              enrichmentSource: enriched.enrichment_source || null, // Reset if not set by cascade
+              ntropyConfidence: enriched.ntropy_confidence ?? null,
+              agenticConfidence: enriched.agentic_confidence ?? null, // From Layer 2/3
+              reasoningTrace: enriched.reasoning_trace || [],
+              excludeFromAnalysis: enriched.exclude_from_analysis ?? false,
+              transactionType: enriched.transaction_type || "regular",
+              linkedTransactionId: enriched.linked_transaction_id || null,
+              // Determine enrichment stage based on what was processed
+              enrichmentStage: enriched.enrichment_source === "ntropy" ? "ntropy_done" 
+                : enriched.enrichment_source ? "agentic_done" 
+                : "pending",
+            });
+            updatedCount++;
+          } catch (updateError) {
+            console.error(`[Current Finances] Failed to update transaction ${existingTx.id}:`, updateError);
+            failedCount++;
+          }
+        }
+      }
+
+      console.log(`[Current Finances] Updated ${updatedCount} transactions, ${failedCount} failed`);
+
+      // Step 6: Trigger budget recalibration
+      await recalibrateAccountBudget(item);
+      
+      // Step 7: Recalculate overall user budget
+      await recalculateUserBudgetFromAccounts(userId);
+
+      // Step 8: Fetch updated item for response
+      const updatedItem = await storage.getTrueLayerItemById(accountId);
+      const analysisSummary = updatedItem?.analysisSummary || null;
+
+      console.log(`[Current Finances] Re-enrichment completed for account ${accountId}`);
+
+      res.json({ 
+        success: failedCount === 0, 
+        analysisSummary,
+        transactionsProcessed: existingTransactions.length,
+        transactionsUpdated: updatedCount,
+        transactionsFailed: failedCount,
+        message: failedCount > 0 
+          ? `Re-enriched ${updatedCount} transactions (${failedCount} failed).`
+          : `Re-enriched ${updatedCount} transactions through the full cascade.`
+      });
+    } catch (error: any) {
+      console.error("[Current Finances] Error re-enriching account:", error);
+      res.status(500).json({ message: "Failed to re-enrich transactions" });
     }
   });
 

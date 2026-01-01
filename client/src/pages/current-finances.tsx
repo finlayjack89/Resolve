@@ -280,12 +280,17 @@ export default function CurrentFinances() {
   const analyzeMutation = useMutation({
     mutationFn: async (accountId: string) => {
       setRefreshingAccountId(accountId);
-      const response = await apiRequest("POST", `/api/current-finances/account/${accountId}/analyze`);
+      // Use re-enrich endpoint to process existing transactions through full cascade
+      // This doesn't require TrueLayer connection and triggers Nylas context hunting for low-confidence transactions
+      const response = await apiRequest("POST", `/api/current-finances/account/${accountId}/re-enrich`);
       return response.json();
     },
-    onSuccess: () => {
+    onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["/api/current-finances/combined"] });
-      toast({ title: "Analysis complete", description: "Account transactions have been re-analyzed." });
+      const message = data.transactionsUpdated 
+        ? `Re-enriched ${data.transactionsUpdated} transactions through the full cascade.`
+        : "Account transactions have been re-analyzed.";
+      toast({ title: "Analysis complete", description: message });
     },
     onError: () => {
       toast({ title: "Analysis failed", description: "Could not re-analyze transactions.", variant: "destructive" });

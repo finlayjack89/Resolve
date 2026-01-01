@@ -73,8 +73,9 @@ function needsRecalibration(item: TrueLayerItem): boolean {
 /**
  * Recalibrate account budget analysis
  * Analyzes enriched transactions to compute AccountAnalysisSummary
+ * Exported for use by re-enrichment endpoints
  */
-async function recalibrateAccountBudget(item: TrueLayerItem): Promise<void> {
+export async function recalibrateAccountBudget(item: TrueLayerItem): Promise<void> {
   const accountId = item.id;
   console.log(`[Background Sync] Starting budget recalibration for account ${accountId}`);
 
