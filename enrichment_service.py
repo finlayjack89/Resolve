@@ -306,7 +306,8 @@ class EnrichmentService:
         merchant_name: Optional[str],
         labels: List[str],
         recurrence_confidence: Optional[float] = None,
-        is_recurring: bool = False
+        is_recurring: bool = False,
+        original_description: Optional[str] = None
     ) -> tuple[float, Optional[str]]:
         """
         Layer 1: Calculate Ntropy confidence with ambiguity penalties
@@ -318,6 +319,7 @@ class EnrichmentService:
         - +0.1 if specific labels (not generic) were returned
         - +0.1 if recurrence was detected
         - Then apply ambiguity penalties for generic merchants/labels
+        - ALSO check original_description for payment processor keywords (PayPal, Amazon, etc.)
         
         Returns:
             Tuple of (final_confidence, penalty_reason or None)
@@ -366,6 +368,26 @@ class EnrichmentService:
                     if penalty < lowest_penalty:
                         lowest_penalty = penalty
                         penalty_reason = f"ambiguous label: {ambiguous_label}"
+        
+        # CRITICAL: Check original bank description for payment processor keywords
+        # Even if Ntropy extracted a clean merchant name (e.g., "Uber" from "PAYPAL *UBERTRIP"),
+        # the presence of payment processors in the raw description signals uncertainty
+        if original_description:
+            desc_lower = original_description.lower()
+            # Payment processors that hide actual merchants
+            payment_processors = {
+                'paypal': 0.5,    # PayPal hides actual merchant
+                'amazon': 0.5,   # Amazon marketplace has many sellers
+                'ebay': 0.5,     # eBay marketplace
+                'klarna': 0.6,   # Buy-now-pay-later
+                'clearpay': 0.6, # Buy-now-pay-later
+                'afterpay': 0.6, # Buy-now-pay-later
+            }
+            for processor, penalty in payment_processors.items():
+                if processor in desc_lower:
+                    if penalty < lowest_penalty:
+                        lowest_penalty = penalty
+                        penalty_reason = f"payment processor in description: {processor}"
         
         final_confidence = base_confidence * lowest_penalty
         return (final_confidence, penalty_reason)
@@ -758,7 +780,8 @@ class EnrichmentService:
                             merchant_name,
                             labels,
                             recurrence_confidence=None,  # No longer used
-                            is_recurring=is_recurring
+                            is_recurring=is_recurring,
+                            original_description=norm_tx.description  # Check for payment processors in original description
                         )
                         
                         # Build reasoning trace
