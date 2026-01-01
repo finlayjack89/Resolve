@@ -30,6 +30,8 @@ Preferred communication style: Simple, everyday language.
   - `recurrence`: enum string ('one-off', 'recurring', 'subscription')
 - **Cascade Field Tracking**: Each transaction stores enrichment_source, ntropy_confidence, reasoning_trace (array of layer decisions), and exclude_from_analysis.
 - **Transaction Reconciliation**: Ghost Pair detection (Layer 0) now runs FIRST in cascade, detecting inter-account transfers before Ntropy. Refunds/reversals detected via keyword matching + merchant/amount/date fuzzy matching.
+- **Re-enrichment Feature**: Existing transactions can be re-processed through the full enrichment cascade without requiring a new TrueLayer connection. Uses POST `/api/current-finances/account/:id/re-enrich` endpoint. Supports testing enrichment changes and triggering higher layers (Nylas/Sherlock) for low-confidence transactions.
+- **PayPal/Amazon Confidence Penalty**: Payment processors (PayPal, Amazon, eBay, Klarna, Clearpay, Afterpay) detected in original bank description trigger 0.5x confidence penalty, dropping from 0.80 to 0.40 and triggering Layer 2 (Context Hunter) for better categorization.
 - **AI Research System**: Claude Sonnet 4.5 for automated lender rule discovery with human verification and intelligent caching.
 - **Python Backend Integration**: FastAPI runs as a child process of the Node.js server, utilizing Google OR-Tools CP-SAT solver. Includes health checks, retry logic, and auto-restart.
 
