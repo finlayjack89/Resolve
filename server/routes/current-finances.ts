@@ -1000,4 +1000,147 @@ export function registerCurrentFinancesRoutes(app: Express): void {
       res.status(500).json({ error: error.message || "Failed to sync grant" });
     }
   });
+
+  /**
+   * POST /api/dev/seed-test-transactions
+   * Development-only endpoint to create test data for enrichment cascade testing
+   * Creates a mock bank account with PayPal, Amazon, and regular transactions
+   */
+  if (process.env.NODE_ENV === "development") {
+    app.post("/api/dev/seed-test-transactions", requireAuth, async (req, res) => {
+      try {
+        const userId = (req.user as any).id;
+        const now = new Date();
+        
+        console.log(`[Dev Seed] Creating test data for user ${userId}`);
+        
+        // Create a mock TrueLayer item (fake bank account)
+        const mockItem = await storage.createTrueLayerItem({
+          userId,
+          trueLayerAccountId: `mock_account_${Date.now()}`,
+          institutionName: "Test Bank (Dev)",
+          institutionLogoUrl: null,
+          accountName: "Test Current Account",
+          accountType: "current",
+          currency: "GBP",
+          accessTokenEncrypted: "mock_encrypted_token", // Fake token
+          refreshTokenEncrypted: "mock_encrypted_refresh",
+          scaExpiresAt: new Date(now.getTime() + 90 * 24 * 60 * 60 * 1000), // 90 days from now
+          lastSyncedAt: now,
+          connectionStatus: "active",
+        });
+
+        console.log(`[Dev Seed] Created mock TrueLayer item: ${mockItem.id}`);
+
+        // Create test transactions - mix of PayPal (low confidence), Amazon, and regular
+        const testTransactions = [
+          // PayPal transactions - should trigger 0.5x penalty and Nylas cascade
+          {
+            originalDescription: "PAYPAL *SPOTIFY",
+            amountCents: 999,
+            entryType: "outgoing",
+            transactionDate: new Date(now.getTime() - 3 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+          },
+          {
+            originalDescription: "PAYPAL *AMAZON PRIME",
+            amountCents: 899,
+            entryType: "outgoing",
+            transactionDate: new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+          },
+          {
+            originalDescription: "PAYPAL *UNKNOWN MERCHANT",
+            amountCents: 2499,
+            entryType: "outgoing",
+            transactionDate: new Date(now.getTime() - 10 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+          },
+          // Amazon transactions - should also trigger 0.5x penalty
+          {
+            originalDescription: "AMAZON.CO.UK*MKXXXXXX",
+            amountCents: 4599,
+            entryType: "outgoing",
+            transactionDate: new Date(now.getTime() - 5 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+          },
+          {
+            originalDescription: "AMZN MKTP UK*ABCDEF",
+            amountCents: 1299,
+            entryType: "outgoing",
+            transactionDate: new Date(now.getTime() - 12 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+          },
+          // Regular transactions - should get normal Ntropy confidence
+          {
+            originalDescription: "TESCO STORES 1234",
+            amountCents: 5647,
+            entryType: "outgoing",
+            transactionDate: new Date(now.getTime() - 2 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+          },
+          {
+            originalDescription: "SAINSBURYS SUPERMARKET",
+            amountCents: 3299,
+            entryType: "outgoing",
+            transactionDate: new Date(now.getTime() - 4 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+          },
+          {
+            originalDescription: "NETFLIX.COM",
+            amountCents: 1599,
+            entryType: "outgoing",
+            transactionDate: new Date(now.getTime() - 15 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+          },
+          // Income - for balance
+          {
+            originalDescription: "ACME CORP SALARY",
+            amountCents: 250000,
+            entryType: "incoming",
+            transactionDate: new Date(now.getTime() - 20 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+          },
+          // Transfer pair - should trigger Ghost Pair detection
+          {
+            originalDescription: "Transfer to Savings",
+            amountCents: 50000,
+            entryType: "outgoing",
+            transactionDate: new Date(now.getTime() - 1 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+          },
+        ];
+
+        // Create enriched transactions (pending enrichment)
+        const transactionsToInsert = testTransactions.map(tx => ({
+          userId,
+          trueLayerItemId: mockItem.id,
+          trueLayerTransactionId: `mock_tx_${Date.now()}_${Math.random().toString(36).substring(7)}`,
+          originalDescription: tx.originalDescription,
+          amountCents: tx.amountCents,
+          entryType: tx.entryType,
+          transactionDate: tx.transactionDate,
+          currency: "GBP",
+          enrichmentStage: "pending" as const, // Ready for enrichment
+          merchantCleanName: null,
+          labels: [],
+          isRecurring: false,
+          reasoningTrace: [],
+          contextData: {},
+        }));
+
+        await storage.saveEnrichedTransactions(transactionsToInsert);
+
+        console.log(`[Dev Seed] Created ${transactionsToInsert.length} test transactions`);
+
+        res.json({
+          success: true,
+          message: `Created test bank account with ${transactionsToInsert.length} transactions`,
+          accountId: mockItem.id,
+          transactions: transactionsToInsert.length,
+          testCases: {
+            paypal: 3,
+            amazon: 2,
+            regular: 3,
+            income: 1,
+            transfer: 1,
+          },
+          nextStep: `Call POST /api/current-finances/account/${mockItem.id}/re-enrich to test the enrichment cascade`,
+        });
+      } catch (error: any) {
+        console.error("[Dev Seed] Error:", error);
+        res.status(500).json({ error: error.message || "Failed to seed test data" });
+      }
+    });
+  }
 }
