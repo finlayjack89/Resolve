@@ -219,6 +219,7 @@ export function registerTrueLayerRoutes(app: Express) {
               const rawTransactionsToStore = transactions.map((tx: any) => {
                 const isIncoming = tx.amount > 0 || tx.transaction_type === "CREDIT";
                 return {
+                  userId: userId as string,  // CRITICAL: Include userId to avoid not-null constraint violation
                   trueLayerItemId: item.id,
                   trueLayerTransactionId: String(tx.transaction_id),
                   originalDescription: tx.description || "",

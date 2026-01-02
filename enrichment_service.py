@@ -769,14 +769,15 @@ class EnrichmentService:
                         # ============== Ntropy SDK v5.x Response Parsing ==============
                         # The SDK response has entities (counterparty) and categories (general/accounting)
                         # We normalize this in _enrich_single_sync and store in _normalized
-                        normalized = enriched_dict.get('_normalized', {})
+                        # NOTE: Use a different variable name to avoid shadowing the outer 'normalized' list
+                        ntropy_normalized = enriched_dict.get('_normalized', {})
                         
                         # Get merchant info from normalized structure
-                        merchant_name = normalized.get('merchant_name')
-                        logo_url = normalized.get('logo_url')
-                        website_url = normalized.get('website_url')
-                        general_category = normalized.get('category')
-                        labels = normalized.get('labels', [])
+                        merchant_name = ntropy_normalized.get('merchant_name')
+                        logo_url = ntropy_normalized.get('logo_url')
+                        website_url = ntropy_normalized.get('website_url')
+                        general_category = ntropy_normalized.get('category')
+                        labels = ntropy_normalized.get('labels', [])
                         
                         # Recurrence is still at top level
                         recurrence_value = enriched_dict.get('recurrence')
