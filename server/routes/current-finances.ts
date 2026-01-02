@@ -498,9 +498,10 @@ export function registerCurrentFinancesRoutes(app: Express): void {
 
       // Step 2: Convert database transactions to format expected by enrichment service
       // The enrichment service expects TrueLayer-like format
+      // CRITICAL: Ensure transaction_id is always a string to prevent Python slice errors
       const transactionsForEnrichment = existingTransactions.map(tx => ({
-        transaction_id: tx.trueLayerTransactionId,
-        description: tx.originalDescription,
+        transaction_id: String(tx.trueLayerTransactionId || `fallback-${tx.id}`),
+        description: String(tx.originalDescription || ""),
         amount: tx.amountCents / 100, // Convert cents back to decimal
         currency: tx.currency || "GBP",
         timestamp: tx.transactionDate ? new Date(tx.transactionDate).toISOString() : new Date().toISOString(),

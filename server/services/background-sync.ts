@@ -330,13 +330,117 @@ async function syncAccount(item: TrueLayerItem): Promise<void> {
       return;
     }
 
-    // Fetch transactions from TrueLayer (90 days)
-    const transactions = await fetchAllTransactions(accessToken, 90);
-    console.log(`[Background Sync] Fetched ${transactions.length} transactions for account ${accountId}`);
-
-    // Get existing enriched transactions for this account to find new ones
+    // Get existing transactions for this account
     const existingTransactions = await storage.getEnrichedTransactionsByItemId(accountId);
     const existingTxIds = new Set(existingTransactions.map(tx => tx.trueLayerTransactionId));
+    
+    // Check if account has pending enrichment transactions (stored in callback, not yet enriched)
+    const pendingEnrichmentTxs = existingTransactions.filter(tx => 
+      tx.enrichmentStage === "pending" || tx.enrichmentStage === "pending_enrichment"
+    );
+    
+    // If we have pending enrichment transactions, process them instead of fetching from TrueLayer
+    // This handles the case where transactions were stored in the OAuth callback
+    if (pendingEnrichmentTxs.length > 0 && item.connectionStatus === "pending_enrichment") {
+      console.log(`[Background Sync] Found ${pendingEnrichmentTxs.length} transactions needing enrichment for account ${accountId}`);
+      
+      // Convert existing DB transactions to the format expected by enrichment
+      const transactionsToEnrich = pendingEnrichmentTxs.map(tx => ({
+        transaction_id: String(tx.trueLayerTransactionId),
+        description: tx.originalDescription || "",
+        amount: (tx.amountCents || 0) / 100,
+        currency: tx.currency || "GBP",
+        transaction_type: tx.entryType === "incoming" ? "CREDIT" : "DEBIT",
+        transaction_category: tx.ukCategory,
+        transaction_classification: tx.labels || [],
+        timestamp: tx.transactionDate ? new Date(tx.transactionDate).toISOString() : new Date().toISOString(),
+      }));
+      
+      // Get user for account holder name and country
+      const user = await storage.getUser(item.userId);
+      const accountHolderName = user?.firstName && user?.lastName 
+        ? `${user.firstName} ${user.lastName}` 
+        : null;
+      const userCountry = user?.country || "GB";
+      
+      // Fetch Nylas grant ID for Layer 2 (Context Hunter)
+      const nylasGrants = await storage.getNylasGrantsByUserId(item.userId);
+      const nylasGrantId = nylasGrants.length > 0 ? nylasGrants[0].grantId : null;
+      
+      try {
+        const enrichmentResponse = await fetch("http://localhost:8000/enrich-transactions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            transactions: transactionsToEnrich,
+            user_id: item.userId,
+            truelayer_item_id: accountId,
+            analysis_months: 3,
+            account_holder_name: accountHolderName,
+            country: userCountry,
+            nylas_grant_id: nylasGrantId,
+          }),
+        });
+
+        if (enrichmentResponse.ok) {
+          const data = await enrichmentResponse.json();
+          const enrichedData = data.enriched_transactions || [];
+          console.log(`[Background Sync] Enriched ${enrichedData.length} pending transactions`);
+          
+          // Update transactions with enrichment data
+          const enrichedRecords = enrichedData.map((tx: any) => ({
+            trueLayerItemId: accountId,
+            trueLayerTransactionId: String(tx.transaction_id),
+            originalDescription: tx.description || "",
+            merchantCleanName: tx.merchant_clean_name,
+            merchantLogoUrl: tx.merchant_logo_url,
+            merchantWebsiteUrl: tx.merchant_website_url,
+            labels: tx.labels || [],
+            isRecurring: tx.is_recurring || false,
+            recurrenceFrequency: tx.recurrence_frequency || null,
+            recurrenceDay: tx.recurrence_day || null,
+            amountCents: Math.round(Math.abs(tx.amount_cents)),
+            currency: "GBP",
+            entryType: tx.entry_type || "outgoing",
+            budgetGroup: tx.budget_category || "discretionary",
+            ukCategory: tx.uk_category || "uncategorized",
+            transactionDate: tx.transaction_date,
+            enrichmentStage: "enriched",
+            enrichmentSource: tx.enrichment_source || "ntropy",
+            ntropyConfidence: tx.ntropy_confidence,
+          }));
+          
+          await storage.saveEnrichedTransactions(enrichedRecords);
+          
+          // Mark account as active and update lastSyncedAt
+          await storage.updateTrueLayerItem(accountId, { 
+            lastSyncedAt: new Date(),
+            connectionStatus: "active",
+          });
+          
+          console.log(`[Background Sync] Enrichment completed for account ${accountId}`);
+          return; // Done with this account
+        }
+      } catch (enrichError) {
+        console.log(`[Background Sync] Enrichment failed for pending transactions:`, enrichError);
+        // Fall through to try fetching fresh transactions
+      }
+    }
+    
+    // Standard flow: Fetch transactions from TrueLayer (90 days)
+    let transactions: any[] = [];
+    try {
+      transactions = await fetchAllTransactions(accessToken, 90);
+      console.log(`[Background Sync] Fetched ${transactions.length} transactions for account ${accountId}`);
+    } catch (fetchError: any) {
+      // If SCA exceeded, the account needs re-authentication
+      if (fetchError.message?.includes("sca_exceeded") || fetchError.message?.includes("consent")) {
+        console.log(`[Background Sync] SCA window expired for account ${accountId}, needs re-authentication`);
+        await storage.updateTrueLayerItem(accountId, { connectionStatus: "expired" });
+        return;
+      }
+      throw fetchError;
+    }
     
     // Filter to only new transactions
     const newTransactions = transactions.filter(tx => !existingTxIds.has(tx.transaction_id));

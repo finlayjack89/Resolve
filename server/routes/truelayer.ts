@@ -134,14 +134,14 @@ export function registerTrueLayerRoutes(app: Express) {
 
         if (existingItem) {
           // Update existing account with new tokens
+          // DON'T set lastSyncedAt - it will be set after enrichment completes
           await storage.updateTrueLayerItem(existingItem.id, {
             accessTokenEncrypted: encryptToken(accessToken),
             refreshTokenEncrypted: tokenResponse.refresh_token 
               ? encryptToken(tokenResponse.refresh_token) 
               : existingItem.refreshTokenEncrypted,
             consentExpiresAt,
-            lastSyncedAt: new Date(),
-            connectionStatus: "active",
+            connectionStatus: "pending_enrichment", // Ready for enrichment
             // Update institution info in case it changed
             institutionName,
             accountName,
@@ -159,6 +159,7 @@ export function registerTrueLayerRoutes(app: Express) {
           }
         } else {
           // Create new TrueLayerItem for this account
+          // DON'T set lastSyncedAt - it will be set after enrichment completes
           await storage.createTrueLayerItem({
             userId: userId as string,
             trueLayerAccountId,
@@ -172,8 +173,8 @@ export function registerTrueLayerRoutes(app: Express) {
               : null,
             consentExpiresAt,
             provider: account.provider?.provider_id || null,
-            lastSyncedAt: new Date(),
-            connectionStatus: "active",
+            lastSyncedAt: null, // Will be set after enrichment
+            connectionStatus: "pending_enrichment",
           });
           newAccountsCreated++;
           console.log(`[TrueLayer] Created new account: ${institutionName} - ${accountName}`);
@@ -181,6 +182,83 @@ export function registerTrueLayerRoutes(app: Express) {
       }
 
       console.log(`[TrueLayer] Callback complete for user ${userId}: ${newAccountsCreated} new, ${existingAccountsUpdated} updated`);
+
+      // CRITICAL: Fetch transactions IMMEDIATELY within the 5-minute SCA window
+      // TrueLayer's SCA exemption expires 5 minutes after authentication
+      // If we don't fetch now, subsequent attempts will fail with sca_exceeded error
+      console.log(`[TrueLayer] Fetching transactions immediately (within SCA window)...`);
+      
+      let totalTransactionsFetched = 0;
+      const allItems = await storage.getTrueLayerItemsByUserId(userId as string);
+      
+      // Use dynamic date range for transaction fetch
+      const now = new Date();
+      const fromDate = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000);
+      const from = fromDate.toISOString().split("T")[0];
+      const to = now.toISOString().split("T")[0];
+      
+      for (const item of allItems) {
+        // Only fetch for newly created/updated accounts that match this session
+        const matchingAccount = accountsResponse.results.find(
+          (acc: any) => acc.account_id === item.trueLayerAccountId
+        );
+        
+        if (matchingAccount) {
+          try {
+            console.log(`[TrueLayer] Fetching transactions for ${item.institutionName} - ${item.accountName} (${item.trueLayerAccountId})...`);
+            
+            // Use per-account fetch to avoid duplicate transactions across accounts
+            const txResponse = await fetchTransactions(accessToken, item.trueLayerAccountId, from, to);
+            const transactions = txResponse.results || [];
+            
+            console.log(`[TrueLayer] Fetched ${transactions.length} transactions for account ${item.id}`);
+            
+            if (transactions.length > 0) {
+              // Store transactions with proper schema fields
+              // Use a map to track which category mapping to apply
+              const rawTransactionsToStore = transactions.map((tx: any) => {
+                const isIncoming = tx.amount > 0 || tx.transaction_type === "CREDIT";
+                return {
+                  trueLayerItemId: item.id,
+                  trueLayerTransactionId: String(tx.transaction_id),
+                  originalDescription: tx.description || "",
+                  amountCents: Math.round(Math.abs(tx.amount) * 100),
+                  currency: tx.currency || "GBP",
+                  entryType: isIncoming ? "incoming" : "outgoing",
+                  transactionDate: tx.timestamp?.split("T")[0] || new Date().toISOString().split("T")[0],
+                  // Set default categories - enrichment will update these
+                  ukCategory: tx.transaction_category || (isIncoming ? "income" : "uncategorized"),
+                  budgetGroup: isIncoming ? "income" : "discretionary",
+                  isRecurring: false,
+                  enrichmentStage: "pending",
+                  ntropyConfidence: null,
+                  enrichmentSource: null,
+                  // Required fields to avoid schema violations
+                  labels: tx.transaction_classification || [],
+                };
+              });
+              
+              // Store transactions - saveEnrichedTransactions handles duplicates
+              try {
+                await storage.saveEnrichedTransactions(rawTransactionsToStore);
+                totalTransactionsFetched += transactions.length;
+                console.log(`[TrueLayer] Stored ${transactions.length} raw transactions for account ${item.id}`);
+                
+                // IMPORTANT: Keep connectionStatus as "pending_enrichment" 
+                // Background sync will detect this and enrich the raw transactions
+                // lastSyncedAt is NOT updated until enrichment completes
+              } catch (insertError: any) {
+                console.log(`[TrueLayer] Error storing transactions: ${insertError.message}`);
+              }
+            }
+          } catch (fetchError: any) {
+            console.error(`[TrueLayer] Failed to fetch transactions for ${item.id}:`, fetchError.message);
+            // Don't fail the whole callback, just log the error
+          }
+        }
+      }
+      
+      console.log(`[TrueLayer] SCA fetch complete: ${totalTransactionsFetched} total transactions stored`);
 
       res.redirect(`${returnUrl}?connected=true`);
     } catch (error: any) {

@@ -256,7 +256,10 @@ async def enrich_transactions_streaming(request: StreamingEnrichmentRequest):
             ):
                 yield f"data: {json.dumps(event)}\n\n"
         except Exception as e:
+            import traceback
             print(f"[Enrichment Stream] Error: {e}", file=sys.stderr)
+            print(f"[Enrichment Stream] Full traceback:", file=sys.stderr)
+            traceback.print_exc()
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
     
     return StreamingResponse(

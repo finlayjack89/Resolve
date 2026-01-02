@@ -39,6 +39,10 @@ export function setupAuth(app: Express) {
     ttl: 60 * 60, // 1 hour TTL to match cookie maxAge
   });
   
+  // Replit dev domain uses HTTPS, so we need secure cookies and sameSite=none
+  // to survive cross-site redirects (e.g., TrueLayer OAuth callback)
+  const isSecureContext = isProduction || !!process.env.REPLIT_DEV_DOMAIN;
+  
   const sessionSettings: session.SessionOptions = {
     secret: process.env.SESSION_SECRET || "paydown-pilot-secret-key",
     resave: false,
@@ -46,8 +50,11 @@ export function setupAuth(app: Express) {
     cookie: {
       maxAge: 60 * 60 * 1000, // 1 hour
       httpOnly: true,
-      secure: isProduction, // Secure cookies in production only
-      sameSite: isProduction ? "none" : "lax", // 'none' for cross-site in prod, 'lax' for dev
+      // Use secure cookies on HTTPS (production or Replit dev domain)
+      secure: isSecureContext,
+      // CRITICAL: Must be 'none' for cross-site redirects (TrueLayer OAuth)
+      // 'lax' blocks cookies on third-party redirects in modern browsers
+      sameSite: isSecureContext ? "none" : "lax",
     },
     store: pgStore,
   };

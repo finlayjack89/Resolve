@@ -76,6 +76,8 @@ export interface IStorage {
   // Enriched Transactions methods (multi-account support)
   getEnrichedTransactionsByUserId(userId: string): Promise<EnrichedTransaction[]>;
   getEnrichedTransactionsByItemId(trueLayerItemId: string): Promise<EnrichedTransaction[]>; // NEW: per-account
+  getEnrichedTransactionsByItemIdExcludePending(trueLayerItemId: string): Promise<EnrichedTransaction[]>; // UI-safe: excludes pending
+  getPendingTransactionsByItemId(trueLayerItemId: string): Promise<EnrichedTransaction[]>; // Background sync: only pending
   getEnrichedTransactionsCount(userId: string): Promise<number>;
   getEnrichedTransactionsCountByItemId(trueLayerItemId: string): Promise<number>; // NEW: per-account
   hasRecentEnrichedTransactions(userId: string, maxAgeHours?: number): Promise<boolean>;
@@ -356,6 +358,19 @@ export class DatabaseStorage implements IStorage {
     return await db.select().from(enrichedTransactions).where(eq(enrichedTransactions.trueLayerItemId, trueLayerItemId));
   }
   
+  async getEnrichedTransactionsByItemIdExcludePending(trueLayerItemId: string): Promise<EnrichedTransaction[]> {
+    // Returns only fully enriched transactions for UI display
+    // Excludes transactions that are still pending enrichment
+    const all = await db.select().from(enrichedTransactions).where(eq(enrichedTransactions.trueLayerItemId, trueLayerItemId));
+    return all.filter(tx => tx.enrichmentStage !== "pending" && tx.enrichmentStage !== "pending_enrichment");
+  }
+  
+  async getPendingTransactionsByItemId(trueLayerItemId: string): Promise<EnrichedTransaction[]> {
+    // Returns only pending transactions for background sync enrichment
+    const all = await db.select().from(enrichedTransactions).where(eq(enrichedTransactions.trueLayerItemId, trueLayerItemId));
+    return all.filter(tx => tx.enrichmentStage === "pending" || tx.enrichmentStage === "pending_enrichment");
+  }
+  
   async getEnrichedTransactionsCount(userId: string): Promise<number> {
     const transactions = await db.select().from(enrichedTransactions).where(eq(enrichedTransactions.userId, userId));
     return transactions.length;
@@ -398,6 +413,7 @@ export class DatabaseStorage implements IStorage {
     if (transactions.length === 0) return;
     
     // Use onConflictDoUpdate to upsert transactions
+    // Include ALL enrichment fields so updates from enrichment pipeline are persisted
     for (const tx of transactions) {
       await db.insert(enrichedTransactions)
         .values(tx)
@@ -414,6 +430,20 @@ export class DatabaseStorage implements IStorage {
             recurrenceFrequency: tx.recurrenceFrequency,
             recurrenceDay: tx.recurrenceDay,
             budgetCategory: tx.budgetCategory,
+            ukCategory: tx.ukCategory,
+            // Enrichment pipeline fields - CRITICAL for updating raw -> enriched
+            enrichmentStage: tx.enrichmentStage,
+            enrichmentSource: tx.enrichmentSource,
+            ntropyConfidence: tx.ntropyConfidence,
+            agenticConfidence: tx.agenticConfidence,
+            reasoningTrace: tx.reasoningTrace,
+            contextData: tx.contextData,
+            isSubscription: tx.isSubscription,
+            subscriptionId: tx.subscriptionId,
+            // Reconciliation fields
+            transactionType: tx.transactionType,
+            linkedTransactionId: tx.linkedTransactionId,
+            excludeFromAnalysis: tx.excludeFromAnalysis,
             createdAt: new Date(),
           },
         });
@@ -950,6 +980,14 @@ class GuestStorageWrapper implements IStorage {
   
   async getEnrichedTransactionsByItemId(trueLayerItemId: string): Promise<EnrichedTransaction[]> {
     return this.dbStorage.getEnrichedTransactionsByItemId(trueLayerItemId);
+  }
+  
+  async getEnrichedTransactionsByItemIdExcludePending(trueLayerItemId: string): Promise<EnrichedTransaction[]> {
+    return this.dbStorage.getEnrichedTransactionsByItemIdExcludePending(trueLayerItemId);
+  }
+  
+  async getPendingTransactionsByItemId(trueLayerItemId: string): Promise<EnrichedTransaction[]> {
+    return this.dbStorage.getPendingTransactionsByItemId(trueLayerItemId);
   }
   
   async getEnrichedTransactionsCount(userId: string): Promise<number> {
