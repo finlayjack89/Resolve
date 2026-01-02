@@ -310,7 +310,11 @@ export function registerTrueLayerRoutes(app: Express) {
         };
       });
 
-      const anyActive = accounts.some(a => a.connectionStatus === "active");
+      const anyActive = accounts.some(a => 
+        a.connectionStatus === "active" || 
+        a.connectionStatus === "connected" || 
+        a.connectionStatus === "pending_enrichment"
+      );
       const anyNeedsReauth = accounts.some(a => a.needsReauth);
 
       res.json({

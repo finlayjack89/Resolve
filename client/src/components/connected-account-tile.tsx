@@ -47,7 +47,9 @@ interface ConnectedAccountTileProps {
 }
 
 export function ConnectedAccountTile({ account, currency, isRefreshing, onRefresh, onRemove, isRemoving }: ConnectedAccountTileProps) {
-  const isConnected = account.connectionStatus === "connected" || account.connectionStatus === "active";
+  const isConnected = account.connectionStatus === "connected" || 
+                     account.connectionStatus === "active" || 
+                     account.connectionStatus === "pending_enrichment";
   const hasAnalysis = !!account.analysisSummary;
   
   const lastSynced = account.lastSyncedAt 
