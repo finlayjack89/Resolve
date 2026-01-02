@@ -12,9 +12,27 @@ const REFUND_KEYWORDS = [
   "REVERSAL",
 ];
 
+// Keywords indicating a bounced/returned direct debit
+const BOUNCE_KEYWORDS = [
+  "DIRECT DEBIT RETURNED",
+  "DD RETURNED",
+  "UNPAID DIRECT DEBIT",
+  "RETURNED PAYMENT",
+  "PAYMENT RETURNED",
+  "BOUNCED",
+  "DISHONOURED",
+  "INSUFFICIENT FUNDS",
+];
+
+function hasBounceKeyword(description: string): boolean {
+  const upper = description.toUpperCase();
+  return BOUNCE_KEYWORDS.some((keyword) => upper.includes(keyword));
+}
+
 interface ReconciliationResult {
   transfersDetected: number;
   refundsDetected: number;
+  bouncedPaymentsDetected: number;
   transactionsUpdated: number;
 }
 
@@ -56,7 +74,7 @@ export async function reconcileTransactions(userId: string): Promise<Reconciliat
   
   if (transactions.length === 0) {
     console.log(`[Reconciliation] No transactions to reconcile`);
-    return { transfersDetected: 0, refundsDetected: 0, transactionsUpdated: 0 };
+    return { transfersDetected: 0, refundsDetected: 0, bouncedPaymentsDetected: 0, transactionsUpdated: 0 };
   }
   
   const unprocessed = transactions.filter(
@@ -67,6 +85,7 @@ export async function reconcileTransactions(userId: string): Promise<Reconciliat
   
   let transfersDetected = 0;
   let refundsDetected = 0;
+  let bouncedPaymentsDetected = 0;
   let transactionsUpdated = 0;
   
   const processedIds = new Set<string>();
@@ -152,7 +171,56 @@ export async function reconcileTransactions(userId: string): Promise<Reconciliat
     }
   }
   
-  console.log(`[Reconciliation] Completed: ${transfersDetected} transfers, ${refundsDetected} refunds, ${transactionsUpdated} transactions updated`);
+  // PHASE 3: Detect bounced/returned direct debits
+  // These are incoming credits that match outgoing debits (the payment that bounced)
+  for (const inTx of incoming) {
+    if (processedIds.has(inTx.id)) continue;
+    
+    const description = inTx.merchantCleanName || inTx.originalDescription;
+    if (hasBounceKeyword(description)) {
+      // Look for matching outgoing payment (same amount, within 7 days, earlier date)
+      let linkedOriginalId: string | null = null;
+      
+      for (const outTx of outgoing) {
+        if (processedIds.has(outTx.id)) continue;
+        
+        const sameAmount = inTx.amountCents === outTx.amountCents;
+        const within7Days = daysBetween(inTx.transactionDate, outTx.transactionDate) <= 7;
+        const outTxIsEarlier = new Date(outTx.transactionDate) < new Date(inTx.transactionDate);
+        
+        if (sameAmount && within7Days && outTxIsEarlier) {
+          linkedOriginalId = outTx.id;
+          break;
+        }
+      }
+      
+      // Mark the bounced return credit as excluded
+      await storage.updateEnrichedTransactionReconciliation(inTx.id, {
+        transactionType: "bounced_payment",
+        linkedTransactionId: linkedOriginalId,
+        excludeFromAnalysis: true,
+      });
+      
+      // Mark the original payment that bounced as excluded too
+      if (linkedOriginalId) {
+        await storage.updateEnrichedTransactionReconciliation(linkedOriginalId, {
+          transactionType: "bounced_payment",
+          linkedTransactionId: inTx.id,
+          excludeFromAnalysis: true,
+        });
+        processedIds.add(linkedOriginalId);
+        transactionsUpdated++;
+      }
+      
+      processedIds.add(inTx.id);
+      bouncedPaymentsDetected++;
+      transactionsUpdated++;
+      
+      console.log(`[Reconciliation] Detected bounced payment: ${inTx.originalDescription.substring(0, 40)}... (${inTx.amountCents / 100})`);
+    }
+  }
   
-  return { transfersDetected, refundsDetected, transactionsUpdated };
+  console.log(`[Reconciliation] Completed: ${transfersDetected} transfers, ${refundsDetected} refunds, ${bouncedPaymentsDetected} bounced payments, ${transactionsUpdated} transactions updated`);
+  
+  return { transfersDetected, refundsDetected, bouncedPaymentsDetected, transactionsUpdated };
 }

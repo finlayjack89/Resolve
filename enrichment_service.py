@@ -237,6 +237,10 @@ class EnrichmentService:
         - Within 2 days of each other
         - Opposite entry types (incoming vs outgoing)
         
+        ALSO detects bounced/returned direct debits:
+        - Incoming "DIRECT DEBIT RETURNED" credits match outgoing direct debits
+        - Same amount, within 7 days (bank processing can be slow)
+        
         Returns:
             Dict mapping transaction_id -> ghost pair match info
         """
@@ -244,6 +248,21 @@ class EnrichmentService:
         
         ghost_pairs: Dict[str, Dict[str, Any]] = {}
         processed_ids = set()
+        
+        # Keywords for returned/bounced payments
+        BOUNCE_KEYWORDS = [
+            'direct debit returned',
+            'dd returned',
+            'unpaid direct debit',
+            'returned payment',
+            'payment returned',
+            'reversal',
+            'refund returned',
+            'chargeback',
+            'bounced',
+            'dishonoured',
+            'insufficient funds',
+        ]
         
         # Group transactions by amount for faster matching
         amount_groups: Dict[int, List[TrueLayerIngestModel]] = {}
@@ -253,6 +272,84 @@ class EnrichmentService:
                 amount_groups[amount_cents] = []
             amount_groups[amount_cents].append(tx)
         
+        # PHASE 1: Detect bounced/returned direct debits FIRST
+        # These have special handling because the description changes
+        for tx in normalized_transactions:
+            if tx.transaction_id in processed_ids:
+                continue
+            
+            tx_entry_type = self._determine_entry_type(tx)
+            
+            # Only process incoming transactions for bounce detection
+            if tx_entry_type != "incoming":
+                continue
+            
+            # Check if description matches bounce keywords
+            desc_lower = (tx.description or "").lower()
+            is_bounce = any(kw in desc_lower for kw in BOUNCE_KEYWORDS)
+            
+            if not is_bounce:
+                continue
+            
+            # Found a potential bounce credit - look for matching outgoing payment
+            amount_cents = int(tx.amount * 100)
+            candidates = amount_groups.get(amount_cents, [])
+            
+            try:
+                tx_date = datetime.strptime(tx.timestamp, "%Y-%m-%d")
+            except ValueError:
+                continue
+            
+            for candidate in candidates:
+                if candidate.transaction_id == tx.transaction_id:
+                    continue
+                if candidate.transaction_id in processed_ids:
+                    continue
+                
+                candidate_entry_type = self._determine_entry_type(candidate)
+                
+                # Must be outgoing (the original payment that bounced)
+                if candidate_entry_type != "outgoing":
+                    continue
+                
+                try:
+                    candidate_date = datetime.strptime(candidate.timestamp, "%Y-%m-%d")
+                except ValueError:
+                    continue
+                
+                # Bounced payments can take up to 7 days to appear
+                # The returned credit usually comes AFTER the original debit
+                days_diff = (tx_date - candidate_date).days
+                if days_diff < 0 or days_diff > 7:
+                    continue
+                
+                # Found a bounce pair!
+                ghost_pairs[tx.transaction_id] = {
+                    "linked_id": candidate.transaction_id,
+                    "amount_cents": amount_cents,
+                    "days_apart": abs(days_diff),
+                    "entry_type": tx_entry_type,
+                    "linked_entry_type": candidate_entry_type,
+                    "pair_type": "bounced_payment"
+                }
+                ghost_pairs[candidate.transaction_id] = {
+                    "linked_id": tx.transaction_id,
+                    "amount_cents": amount_cents,
+                    "days_apart": abs(days_diff),
+                    "entry_type": candidate_entry_type,
+                    "linked_entry_type": tx_entry_type,
+                    "pair_type": "bounced_payment"
+                }
+                
+                processed_ids.add(tx.transaction_id)
+                processed_ids.add(candidate.transaction_id)
+                
+                tx_id_short = str(tx.transaction_id)[:16] if tx.transaction_id else "unknown"
+                cand_id_short = str(candidate.transaction_id)[:16] if candidate.transaction_id else "unknown"
+                print(f"[EnrichmentService] Layer 0: Bounced Payment detected - {tx_id_short}... (returned) <-> {cand_id_short}... (original) ({amount_cents/100:.2f})")
+                break
+        
+        # PHASE 2: Standard ghost pair detection (internal transfers)
         for tx in normalized_transactions:
             if tx.transaction_id in processed_ids:
                 continue
@@ -295,14 +392,16 @@ class EnrichmentService:
                     "amount_cents": amount_cents,
                     "days_apart": days_diff,
                     "entry_type": tx_entry_type,
-                    "linked_entry_type": candidate_entry_type
+                    "linked_entry_type": candidate_entry_type,
+                    "pair_type": "transfer"
                 }
                 ghost_pairs[candidate.transaction_id] = {
                     "linked_id": tx.transaction_id,
                     "amount_cents": amount_cents,
                     "days_apart": days_diff,
                     "entry_type": candidate_entry_type,
-                    "linked_entry_type": tx_entry_type
+                    "linked_entry_type": tx_entry_type,
+                    "pair_type": "transfer"
                 }
                 
                 processed_ids.add(tx.transaction_id)
@@ -709,10 +808,21 @@ class EnrichmentService:
                     raw_tx = raw_batch[i]
                     entry_type = self._determine_entry_type(norm_tx)
                     
-                    # ============== LAYER 0 CHECK: Ghost Pair ==============
-                    # If this is a ghost pair, skip Ntropy processing entirely
+                    # ============== LAYER 0 CHECK: Ghost Pair / Bounced Payment ==============
+                    # If this is a ghost pair or bounced payment, skip Ntropy processing entirely
                     if norm_tx.transaction_id in ghost_pairs:
                         ghost_info = ghost_pairs[norm_tx.transaction_id]
+                        pair_type = ghost_info.get("pair_type", "transfer")
+                        
+                        # Determine appropriate labels based on pair type
+                        if pair_type == "bounced_payment":
+                            ghost_labels = ["bounced_payment", "excluded"]
+                            tx_type = "bounced_payment"
+                            reason_text = f"Layer 0: Bounced Payment detected - matched with TX {str(ghost_info['linked_id'])[:16]}..."
+                        else:
+                            ghost_labels = ["transfer", "internal"]
+                            tx_type = "transfer"
+                            reason_text = f"Layer 0: Ghost Pair detected - matched with TX {str(ghost_info['linked_id'])[:16]}..."
                         
                         result = NtropyOutputModel(
                             transaction_id=norm_tx.transaction_id,
@@ -720,20 +830,20 @@ class EnrichmentService:
                             merchant_clean_name=None,
                             merchant_logo_url=None,
                             merchant_website_url=None,
-                            labels=["transfer", "internal"],
+                            labels=ghost_labels,
                             is_recurring=False,
                             recurrence_frequency=None,
                             recurrence_day=None,
                             amount_cents=int(norm_tx.amount * 100),
                             entry_type=entry_type,
-                            budget_category="transfer",
+                            budget_category="transfer",  # Always exclude from budget
                             transaction_date=norm_tx.timestamp,
                             # Layer 0 cascade fields
                             ntropy_confidence=1.0,
                             enrichment_source="math_brain",
-                            reasoning_trace=[f"Layer 0: Ghost Pair detected - matched with TX {str(ghost_info['linked_id'])[:16]}..."],
+                            reasoning_trace=[reason_text],
                             exclude_from_analysis=True,
-                            transaction_type="transfer",
+                            transaction_type=tx_type,
                             linked_transaction_id=ghost_info["linked_id"]
                         )
                         results.append(result)
@@ -741,7 +851,7 @@ class EnrichmentService:
                         high_confidence_count += 1
                         # Safe string slicing for logging
                         tx_id_short = str(norm_tx.transaction_id)[:16] if norm_tx.transaction_id else "unknown"
-                        print(f"[EnrichmentService] Layer 0: Skipping Ntropy for ghost pair {tx_id_short}... (confidence=1.0)")
+                        print(f"[EnrichmentService] Layer 0: Skipping Ntropy for {pair_type} {tx_id_short}... (confidence=1.0)")
                         continue
                     
                     # ============== LAYER 1: Ntropy Processing ==============
