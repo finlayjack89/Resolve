@@ -195,16 +195,28 @@ class EnrichmentService:
         # Normalize amount to positive
         normalized_amount = abs(amount)
         
-        # Truncate timestamp to date
+        # Truncate timestamp to date - ensure it's a string first
         timestamp = raw_tx.get("timestamp", "")
+        if not isinstance(timestamp, str):
+            timestamp = str(timestamp) if timestamp else ""
+        
         if "T" in timestamp:
             date_str = timestamp.split("T")[0]
+        elif len(timestamp) >= 10:
+            date_str = timestamp[:10]
         else:
-            date_str = timestamp[:10] if len(timestamp) >= 10 else timestamp
+            date_str = timestamp
+        
+        # Ensure transaction_id is always a string
+        raw_tx_id = raw_tx.get("transaction_id")
+        if raw_tx_id is None:
+            tx_id = str(hash(raw_tx.get("description", "")))
+        else:
+            tx_id = str(raw_tx_id)
         
         return TrueLayerIngestModel(
-            transaction_id=raw_tx.get("transaction_id", str(hash(raw_tx.get("description", "")))),
-            description=raw_tx.get("description", ""),
+            transaction_id=tx_id,
+            description=raw_tx.get("description", "") or "",
             amount=normalized_amount,
             currency=raw_tx.get("currency", "GBP"),
             transaction_type=tx_type_upper,  # Store normalized uppercase type
@@ -296,7 +308,10 @@ class EnrichmentService:
                 processed_ids.add(tx.transaction_id)
                 processed_ids.add(candidate.transaction_id)
                 
-                print(f"[EnrichmentService] Layer 0: Ghost Pair detected - {tx.transaction_id[:16]}... <-> {candidate.transaction_id[:16]}... ({amount_cents/100:.2f})")
+                # Safe string slicing for logging
+                tx_id_short = str(tx.transaction_id)[:16] if tx.transaction_id else "unknown"
+                cand_id_short = str(candidate.transaction_id)[:16] if candidate.transaction_id else "unknown"
+                print(f"[EnrichmentService] Layer 0: Ghost Pair detected - {tx_id_short}... <-> {cand_id_short}... ({amount_cents/100:.2f})")
                 break
         
         return ghost_pairs
@@ -716,7 +731,7 @@ class EnrichmentService:
                             # Layer 0 cascade fields
                             ntropy_confidence=1.0,
                             enrichment_source="math_brain",
-                            reasoning_trace=[f"Layer 0: Ghost Pair detected - matched with TX {ghost_info['linked_id'][:16]}..."],
+                            reasoning_trace=[f"Layer 0: Ghost Pair detected - matched with TX {str(ghost_info['linked_id'])[:16]}..."],
                             exclude_from_analysis=True,
                             transaction_type="transfer",
                             linked_transaction_id=ghost_info["linked_id"]
@@ -724,7 +739,9 @@ class EnrichmentService:
                         results.append(result)
                         progress_stats["ntropy_completed"] += 1
                         high_confidence_count += 1
-                        print(f"[EnrichmentService] Layer 0: Skipping Ntropy for ghost pair {norm_tx.transaction_id[:16]}... (confidence=1.0)")
+                        # Safe string slicing for logging
+                        tx_id_short = str(norm_tx.transaction_id)[:16] if norm_tx.transaction_id else "unknown"
+                        print(f"[EnrichmentService] Layer 0: Skipping Ntropy for ghost pair {tx_id_short}... (confidence=1.0)")
                         continue
                     
                     # ============== LAYER 1: Ntropy Processing ==============

@@ -196,13 +196,20 @@ class AgenticEnrichmentQueue:
         Returns:
             True if added to queue, False if skipped (idempotency check)
         """
+        # Ensure transaction_id is a string for safe operations
+        if not isinstance(transaction_id, str):
+            transaction_id = str(transaction_id) if transaction_id else ""
+        
         current_stage = self._transaction_stages.get(transaction_id)
+        
+        # Safe string slicing for logging
+        tx_id_short = transaction_id[:16] if len(transaction_id) >= 16 else transaction_id
         
         if current_stage and current_stage not in (
             EnrichmentStage.NTROPY_DONE,
             EnrichmentStage.PENDING
         ):
-            print(f"[AgenticQueue] Skipping {transaction_id[:16]}... - already at stage {current_stage}")
+            print(f"[AgenticQueue] Skipping {tx_id_short}... - already at stage {current_stage}")
             return False
         
         self._transaction_stages[transaction_id] = EnrichmentStage.AGENTIC_QUEUED
@@ -216,7 +223,7 @@ class AgenticEnrichmentQueue:
         }
         
         self._queue.put_nowait(item)
-        print(f"[AgenticQueue] Queued transaction {transaction_id[:16]}... (queue size: {self._queue.qsize()})")
+        print(f"[AgenticQueue] Queued transaction {tx_id_short}... (queue size: {self._queue.qsize()})")
         
         return True
     
@@ -295,6 +302,9 @@ class AgenticEnrichmentQueue:
                 async with self._lock:
                     self._results[transaction_id] = result_dict
                 
+                # Safe string slicing for logging
+                tx_id_short = str(transaction_id)[:16] if transaction_id else "unknown"
+                
                 # Persist enrichment results to database
                 if self._db_upsert_func:
                     try:
@@ -307,16 +317,17 @@ class AgenticEnrichmentQueue:
                             context_data=result_dict.get('context_data'),
                             reasoning_trace=result_dict.get('reasoning_trace'),
                         )
-                        print(f"[AgenticQueue] Persisted {transaction_id[:16]}... to database")
+                        print(f"[AgenticQueue] Persisted {tx_id_short}... to database")
                     except Exception as db_err:
-                        print(f"[AgenticQueue] Failed to persist {transaction_id[:16]}...: {db_err}")
+                        print(f"[AgenticQueue] Failed to persist {tx_id_short}...: {db_err}")
                 
-                print(f"[AgenticQueue] Completed {transaction_id[:16]}... (confidence: {result_dict.get('ai_confidence', 0):.2f})")
+                print(f"[AgenticQueue] Completed {tx_id_short}... (confidence: {result_dict.get('ai_confidence', 0):.2f})")
                 
                 return result_dict
                 
             except Exception as e:
-                print(f"[AgenticQueue] Error processing {transaction_id[:16]}...: {e}")
+                tx_id_short = str(transaction_id)[:16] if transaction_id else "unknown"
+                print(f"[AgenticQueue] Error processing {tx_id_short}...: {e}")
                 self._transaction_stages[transaction_id] = EnrichmentStage.FAILED
                 
                 error_result = {
