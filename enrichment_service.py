@@ -49,7 +49,8 @@ class TrueLayerIngestModel(BaseModel):
     """Validated input from TrueLayer transaction data"""
     transaction_id: str
     description: str
-    amount: float
+    amount: float  # Always positive (normalized)
+    original_amount_sign: int = 1  # 1 for positive/credit, -1 for negative/debit
     currency: str = "GBP"
     transaction_type: Optional[str] = None  # DEBIT/CREDIT
     transaction_category: Optional[str] = None
@@ -183,11 +184,15 @@ class EnrichmentService:
         - Determine entry type from amount sign OR transaction_type field
         - Normalize amounts to positive values
         - Truncate timestamps to date strings
+        - Preserve original amount sign for entry type detection
         """
         # Extract amount and determine direction
         amount = raw_tx.get("amount", 0)
         
-        # TrueLayer: positive = credit, negative = debit
+        # TrueLayer: positive = credit (incoming), negative = debit (outgoing)
+        # Store the original sign before normalizing
+        original_sign = 1 if amount >= 0 else -1
+        
         # OR use transaction_type field (normalize to uppercase for comparison)
         tx_type = raw_tx.get("transaction_type", "")
         tx_type_upper = tx_type.upper() if isinstance(tx_type, str) else ""
@@ -218,6 +223,7 @@ class EnrichmentService:
             transaction_id=tx_id,
             description=raw_tx.get("description", "") or "",
             amount=normalized_amount,
+            original_amount_sign=original_sign,  # Preserve sign for entry type detection
             currency=raw_tx.get("currency", "GBP"),
             transaction_type=tx_type_upper,  # Store normalized uppercase type
             transaction_category=raw_tx.get("transaction_category"),
@@ -250,7 +256,9 @@ class EnrichmentService:
         processed_ids = set()
         
         # Keywords for returned/bounced payments
+        # Note: "returned dd" matches "RETURNED DD" (the most common format)
         BOUNCE_KEYWORDS = [
+            'returned dd',          # Most common format from banks
             'direct debit returned',
             'dd returned',
             'unpaid direct debit',
@@ -262,6 +270,7 @@ class EnrichmentService:
             'bounced',
             'dishonoured',
             'insufficient funds',
+            'reversed dd',
         ]
         
         # Group transactions by amount for faster matching
@@ -559,6 +568,11 @@ class EnrichmentService:
         """
         Determine if a transaction is incoming (income) or outgoing (expense).
         
+        Priority order:
+        1. Description keywords for bounced/returned payments (ALWAYS incoming)
+        2. TrueLayer transaction_type field (if present)
+        3. Original amount sign (preserved during normalization)
+        
         TrueLayer transaction_type values (after uppercase normalization):
         - CREDIT: Money received
         - DEBIT: Money spent  
@@ -566,21 +580,42 @@ class EnrichmentService:
         - DIRECT_DEBIT: Recurring outgoing payment
         - FEE: Outgoing fee
         """
+        # PRIORITY 1: Check for bounced/returned payment keywords
+        # These are ALWAYS incoming credits, regardless of what transaction_type says
+        desc_lower = (norm_tx.description or "").lower()
+        INCOMING_KEYWORDS = [
+            'returned dd',          # Most common format from banks
+            'direct debit returned',
+            'dd returned',
+            'unpaid direct debit',
+            'returned payment',
+            'payment returned',
+            'reversal',
+            'refund returned',
+            'chargeback',
+            'bounced',
+            'dishonoured',
+            'insufficient funds',
+            'reversed dd',
+        ]
+        if any(kw in desc_lower for kw in INCOMING_KEYWORDS):
+            return "incoming"
+        
+        # PRIORITY 2: Check transaction_type (if provided by TrueLayer or background-sync)
         outgoing_types = {"DEBIT", "STANDING_ORDER", "DIRECT_DEBIT", "FEE"}
         incoming_types = {"CREDIT"}
         
-        # Check transaction_type first (more reliable)
         if norm_tx.transaction_type in outgoing_types:
             return "outgoing"
         if norm_tx.transaction_type in incoming_types:
             return "incoming"
         
-        # Fallback to amount sign if transaction_type is unknown
-        # In TrueLayer raw data, negative = outgoing, positive = incoming
-        # But we normalize to absolute values, so check the original amount in raw_tx
-        # Since we don't have access to raw_tx here, assume unknown types with any amount are outgoing
-        # unless explicitly marked as credit
-        return "outgoing"
+        # PRIORITY 3: Fallback to original amount sign (preserved during normalization)
+        # TrueLayer: positive = credit (incoming), negative = debit (outgoing)
+        if norm_tx.original_amount_sign >= 0:
+            return "incoming"
+        else:
+            return "outgoing"
     
     def _enrich_single_sync(self, tx_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Synchronous single transaction enrichment for thread pool"""
