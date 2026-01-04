@@ -100,24 +100,38 @@ function AppLayout({ children }: { children: ReactNode }) {
   const { user, isLoading } = useAuth();
   const [location] = useLocation();
   
-  // Show sidebar for authenticated users, except on login, signup, and onboarding pages
-  const showSidebar = user && !isLoading && !['/login', '/signup', '/onboarding'].includes(location);
+  // Determine if we're on a public page (login, signup, onboarding)
+  const isPublicPage = ['/login', '/signup', '/onboarding'].includes(location);
   
-  if (!showSidebar) {
-    // No sidebar - render children directly without SidebarProvider
-    return <>{children}</>;
+  // Show sidebar for authenticated users on non-public pages
+  const showSidebar = user && !isLoading && !isPublicPage;
+  
+  // For public pages, render without SidebarProvider to avoid any sidebar-related layout
+  // This keeps the tree stable for those pages (no remounting on auth state changes)
+  if (isPublicPage) {
+    return (
+      <div className="flex h-screen w-full">
+        <div className="flex flex-col flex-1">
+          <main className="flex-1">
+            {children}
+          </main>
+        </div>
+      </div>
+    );
   }
   
-  // With sidebar - wrap in SidebarProvider
+  // For authenticated pages, wrap in SidebarProvider
   return (
     <SidebarProvider>
       <div className="flex h-screen w-full">
-        <AppSidebar />
+        {showSidebar && <AppSidebar />}
         <div className="flex flex-col flex-1">
-          <header className="flex items-center justify-between p-2 border-b">
-            <SidebarTrigger data-testid="button-sidebar-toggle" />
-            <ThemeToggle />
-          </header>
+          {showSidebar && (
+            <header className="flex items-center justify-between p-2 border-b">
+              <SidebarTrigger data-testid="button-sidebar-toggle" />
+              <ThemeToggle />
+            </header>
+          )}
           <main className="flex-1 overflow-auto">
             {children}
           </main>
