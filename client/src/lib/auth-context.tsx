@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useEffect, ReactNode } from "react";
+import { createContext, useContext, useState, useEffect, useCallback, useMemo, ReactNode } from "react";
 import type { User } from "@shared/schema";
 
 interface AuthContextType {
@@ -19,31 +19,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     // Check for existing session on mount
+    const checkAuth = async () => {
+      try {
+        // Check server-side session only - no localStorage auto-login
+        const response = await fetch("/api/auth/me", {
+          credentials: "include",
+        });
+        if (response.ok) {
+          const userData = await response.json();
+          setUser(userData);
+        } else {
+          // Clear any stale guest mode flag
+          localStorage.removeItem("guestMode");
+        }
+      } catch (error) {
+        console.error("Auth check failed:", error);
+        localStorage.removeItem("guestMode");
+      } finally {
+        setIsLoading(false);
+      }
+    };
     checkAuth();
   }, []);
 
-  const checkAuth = async () => {
-    try {
-      // Check server-side session only - no localStorage auto-login
-      const response = await fetch("/api/auth/me", {
-        credentials: "include",
-      });
-      if (response.ok) {
-        const userData = await response.json();
-        setUser(userData);
-      } else {
-        // Clear any stale guest mode flag
-        localStorage.removeItem("guestMode");
-      }
-    } catch (error) {
-      console.error("Auth check failed:", error);
-      localStorage.removeItem("guestMode");
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const login = async (email: string, password: string) => {
+  const login = useCallback(async (email: string, password: string) => {
     const response = await fetch("/api/auth/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -58,9 +57,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     const userData = await response.json();
     setUser(userData);
-  };
+  }, []);
 
-  const signup = async (email: string, password: string, firstName?: string, lastName?: string) => {
+  const signup = useCallback(async (email: string, password: string, firstName?: string, lastName?: string) => {
     const response = await fetch("/api/auth/signup", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -75,9 +74,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     const userData = await response.json();
     setUser(userData);
-  };
+  }, []);
 
-  const continueAsGuest = async () => {
+  const continueAsGuest = useCallback(async () => {
     const response = await fetch("/api/auth/guest", {
       method: "POST",
       credentials: "include",
@@ -90,23 +89,33 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const userData = await response.json();
     localStorage.setItem("guestMode", "true");
     setUser(userData);
-  };
+  }, []);
 
-  const logout = async () => {
+  const logout = useCallback(async () => {
     localStorage.removeItem("guestMode");
     await fetch("/api/auth/logout", {
       method: "POST",
       credentials: "include",
     });
     setUser(null);
-  };
+  }, []);
 
-  const updateUser = (updates: Partial<User>) => {
+  const updateUser = useCallback((updates: Partial<User>) => {
     setUser(prev => prev ? { ...prev, ...updates } : null);
-  };
+  }, []);
+
+  const value = useMemo(() => ({ 
+    user, 
+    isLoading, 
+    login, 
+    signup, 
+    continueAsGuest, 
+    logout, 
+    updateUser 
+  }), [user, isLoading, login, signup, continueAsGuest, logout, updateUser]);
 
   return (
-    <AuthContext.Provider value={{ user, isLoading, login, signup, continueAsGuest, logout, updateUser }}>
+    <AuthContext.Provider value={value}>
       {children}
     </AuthContext.Provider>
   );
