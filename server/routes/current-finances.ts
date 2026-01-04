@@ -286,8 +286,12 @@ export function registerCurrentFinancesRoutes(app: Express): void {
       }
 
       console.log(`[DEBUG] Fetching transactions for accountId: ${accountId}`);
-      const transactions = await storage.getEnrichedTransactionsByItemId(accountId);
-      console.log(`[DEBUG] Found ${transactions.length} enriched transactions`);
+      const allTransactions = await storage.getEnrichedTransactionsByItemId(accountId);
+      
+      // Filter out transactions marked for exclusion (transfers, bounced payments, etc.)
+      const transactions = allTransactions.filter(tx => !tx.excludeFromAnalysis);
+      console.log(`[DEBUG] Found ${allTransactions.length} total transactions, ${transactions.length} after filtering excludeFromAnalysis`);
+      
       if (transactions.length > 0) {
         console.log(`[DEBUG] Sample tx:`, {
           id: transactions[0].id,
