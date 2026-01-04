@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useLocation } from "wouter";
 import { useAuth } from "@/lib/auth-context";
 import { Button } from "@/components/ui/button";
@@ -11,7 +11,7 @@ import { Loader2 } from "lucide-react";
 
 export default function Signup() {
   const [, setLocation] = useLocation();
-  const { signup } = useAuth();
+  const { user, signup } = useAuth();
   const { toast } = useToast();
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
@@ -19,6 +19,14 @@ export default function Signup() {
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+
+  // Redirect to onboarding when user becomes authenticated
+  // This ensures navigation happens AFTER React has processed the state update
+  useEffect(() => {
+    if (user) {
+      setLocation("/onboarding");
+    }
+  }, [user, setLocation]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -45,7 +53,7 @@ export default function Signup() {
 
     try {
       await signup(email, password, firstName, lastName);
-      setLocation("/onboarding");
+      // Navigation is handled by useEffect when user state updates
     } catch (error) {
       toast({
         title: "Signup failed",

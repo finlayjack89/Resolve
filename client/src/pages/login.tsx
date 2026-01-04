@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useLocation } from "wouter";
 import { useAuth } from "@/lib/auth-context";
 import { Button } from "@/components/ui/button";
@@ -11,11 +11,22 @@ import { Loader2 } from "lucide-react";
 
 export default function Login() {
   const [, setLocation] = useLocation();
-  const { login, continueAsGuest } = useAuth();
+  const { user, login, continueAsGuest } = useAuth();
   const { toast } = useToast();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [isGuestMode, setIsGuestMode] = useState(false);
+
+  // Redirect when user becomes authenticated
+  // This ensures navigation happens AFTER React has processed the state update
+  // Fixes race condition where setLocation() runs before setUser() is processed
+  useEffect(() => {
+    if (user) {
+      // Guest users go to accounts, regular users go to home
+      setLocation(isGuestMode ? "/accounts" : "/");
+    }
+  }, [user, setLocation, isGuestMode]);
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -28,7 +39,7 @@ export default function Login() {
 
     try {
       await login(formEmail || email, formPassword || password);
-      setLocation("/dashboard");
+      // Navigation is handled by useEffect when user state updates
     } catch (error) {
       toast({
         title: "Login failed",
@@ -42,9 +53,11 @@ export default function Login() {
 
   const handleGuestMode = async () => {
     try {
+      setIsGuestMode(true);
       await continueAsGuest();
-      setLocation("/accounts");
+      // Navigation is handled by useEffect when user state updates
     } catch (error) {
+      setIsGuestMode(false);
       toast({
         title: "Error",
         description: "Failed to start guest mode",
