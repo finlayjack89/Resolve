@@ -110,11 +110,17 @@ export async function recalibrateAccountBudget(item: TrueLayerItem): Promise<voi
 
 /**
  * Compute AccountAnalysisSummary from enriched transactions
+ * Filters out transactions marked for exclusion (transfers, bounced payments, etc.)
  */
 function computeAccountAnalysisSummary(
   transactions: EnrichedTransaction[],
   isSideHustle: boolean
 ): AccountAnalysisSummary {
+  // Filter out transactions that should be excluded from analysis
+  // This includes transfers, bounced payments, and other non-budget items
+  const analysisTransactions = transactions.filter(tx => !tx.excludeFromAnalysis);
+  console.log(`[Budget Recalibration] Analyzing ${analysisTransactions.length} of ${transactions.length} transactions (${transactions.length - analysisTransactions.length} excluded)`);
+  
   const incomeItems: Array<{ description: string; amountCents: number; category: string }> = [];
   const fixedCostsItems: Array<{ description: string; amountCents: number; category: string }> = [];
   const essentialsItems: Array<{ description: string; amountCents: number; category: string }> = [];
@@ -130,7 +136,7 @@ function computeAccountAnalysisSummary(
   let discretionaryCents = 0;
   let debtPaymentsCents = 0;
 
-  for (const tx of transactions) {
+  for (const tx of analysisTransactions) {
     const item = {
       description: tx.merchantCleanName || tx.originalDescription,
       amountCents: tx.amountCents,
@@ -171,7 +177,8 @@ function computeAccountAnalysisSummary(
     }
   }
 
-  const dateRange = getTransactionDateRange(transactions);
+  // Use filtered transactions for date range to avoid excluded transactions diluting averages
+  const dateRange = getTransactionDateRange(analysisTransactions);
   const analysisMonths = Math.max(1, dateRange);
 
   const averageMonthlyIncomeCents = Math.round(totalIncomeCents / analysisMonths);

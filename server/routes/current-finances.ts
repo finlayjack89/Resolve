@@ -457,6 +457,54 @@ export function registerCurrentFinancesRoutes(app: Express): void {
   });
 
   /**
+   * POST /api/current-finances/account/:id/recalibrate
+   * Force recalculates the analysisSummary from existing transactions
+   * without requiring TrueLayer sync or Python enrichment.
+   * This is useful when:
+   * - Transaction flags (like excludeFromAnalysis) have been updated
+   * - Budget calculation logic has changed
+   */
+  app.post("/api/current-finances/account/:id/recalibrate", requireAuth, async (req, res) => {
+    try {
+      const userId = (req.user as any).id;
+      const accountId = req.params.id;
+      
+      const item = await storage.getTrueLayerItemById(accountId);
+      
+      if (!item) {
+        return res.status(404).json({ message: "Account not found" });
+      }
+      
+      if (item.userId !== userId) {
+        return res.status(403).json({ message: "Access denied" });
+      }
+
+      console.log(`[Current Finances] Starting forced recalibration for account ${accountId}`);
+
+      // Recalibrate the account's analysisSummary
+      await recalibrateAccountBudget(item);
+      
+      // Also recalculate the user's overall budget
+      await recalculateUserBudgetFromAccounts(userId);
+      
+      // Fetch updated item
+      const updatedItem = await storage.getTrueLayerItemById(accountId);
+      const analysisSummary = updatedItem?.analysisSummary || null;
+
+      console.log(`[Current Finances] Recalibration completed for account ${accountId}`);
+
+      res.json({ 
+        success: true, 
+        analysisSummary,
+        message: "Budget recalibrated successfully with updated transaction flags."
+      });
+    } catch (error: any) {
+      console.error("[Current Finances] Error recalibrating account:", error);
+      res.status(500).json({ message: "Failed to recalibrate budget" });
+    }
+  });
+
+  /**
    * POST /api/current-finances/account/:id/re-enrich
    * Re-processes existing transactions through the full enrichment cascade (Layers 0-4)
    * without requiring a TrueLayer connection. This is useful for:
