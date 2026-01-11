@@ -8,6 +8,7 @@ import { RefreshCw, Wallet, Building2, TrendingUp, TrendingDown, PiggyBank, Aler
 import { formatCurrency } from "@/lib/format";
 import { useAuth } from "@/lib/auth-context";
 import { ConnectedAccountTile } from "@/components/connected-account-tile";
+import { ConnectBankDialog } from "@/components/connect-bank-dialog";
 import { EnrichmentProgressModal } from "@/components/enrichment-progress-modal";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -71,7 +72,7 @@ export default function CurrentFinances() {
   const searchString = useSearch();
   const [refreshingAccountId, setRefreshingAccountId] = useState<string | null>(null);
   const [removingAccountId, setRemovingAccountId] = useState<string | null>(null);
-  const [isConnecting, setIsConnecting] = useState(false);
+  const [showConnectDialog, setShowConnectDialog] = useState(false);
   const [showEnrichmentModal, setShowEnrichmentModal] = useState(false);
   const [enrichmentJobId, setEnrichmentJobId] = useState<string | null>(null);
   const [showEmailPromptModal, setShowEmailPromptModal] = useState(false);
@@ -90,6 +91,8 @@ export default function CurrentFinances() {
   useEffect(() => {
     const params = new URLSearchParams(searchString);
     if (params.get("connected") === "true") {
+      // Close the connect dialog if it was open
+      setShowConnectDialog(false);
       // Clear URL params
       setLocation("/current-finances", { replace: true });
       // Start enrichment process
@@ -107,7 +110,6 @@ export default function CurrentFinances() {
     } else if (params.get("error")) {
       const error = params.get("error");
       setLocation("/current-finances", { replace: true });
-      setIsConnecting(false);
       setIsConnectingEmail(false);
       toast({
         title: "Connection Failed",
@@ -143,7 +145,7 @@ export default function CurrentFinances() {
     }
   };
 
-  const handleConnectBank = async () => {
+  const handleConnectBank = () => {
     if (user?.id === "guest-user") {
       toast({
         title: "Account Required",
@@ -152,24 +154,7 @@ export default function CurrentFinances() {
       });
       return;
     }
-
-    setIsConnecting(true);
-    try {
-      const response = await fetch(`/api/truelayer/auth-url?returnUrl=${encodeURIComponent("/current-finances")}`, {
-        credentials: "include",
-      });
-      const data = await response.json();
-      
-      if (data.authUrl) {
-        window.location.href = data.authUrl;
-      } else {
-        throw new Error(data.message || "Failed to get authentication URL");
-      }
-    } catch (error: any) {
-      console.error("Connect bank error:", error);
-      setIsConnecting(false);
-      toast({ title: "Connection failed", description: error.message || "Could not start bank connection.", variant: "destructive" });
-    }
+    setShowConnectDialog(true);
   };
 
   const handleEnrichmentComplete = async (result: any) => {
@@ -451,21 +436,11 @@ export default function CurrentFinances() {
             <CardContent>
               <Button
                 onClick={handleConnectBank}
-                disabled={isConnecting}
                 className="h-12 px-8"
                 data-testid="button-connect-bank"
               >
-                {isConnecting ? (
-                  <>
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    Connecting...
-                  </>
-                ) : (
-                  <>
-                    <Building2 className="mr-2 h-4 w-4" />
-                    Connect Your Bank
-                  </>
-                )}
+                <Building2 className="mr-2 h-4 w-4" />
+                Connect Your Bank
               </Button>
             </CardContent>
           </Card>
@@ -480,21 +455,11 @@ export default function CurrentFinances() {
                 <span className="text-sm text-muted-foreground" data-testid="text-account-count">{accounts.length} account{accounts.length !== 1 ? "s" : ""}</span>
                 <Button
                   onClick={handleConnectBank}
-                  disabled={isConnecting}
                   variant="outline"
                   data-testid="button-add-another-bank"
                 >
-                  {isConnecting ? (
-                    <>
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                      Connecting...
-                    </>
-                  ) : (
-                    <>
-                      <Building2 className="mr-2 h-4 w-4" />
-                      Add Another Bank
-                    </>
-                  )}
+                  <Building2 className="mr-2 h-4 w-4" />
+                  Add Another Bank
                 </Button>
               </div>
             </div>
@@ -545,6 +510,13 @@ export default function CurrentFinances() {
           </Card>
         )}
       </main>
+
+      {/* Connect Bank Account Dialog */}
+      <ConnectBankDialog
+        open={showConnectDialog}
+        onOpenChange={setShowConnectDialog}
+        returnUrl="/current-finances"
+      />
 
       {/* Enrichment Progress Modal */}
       <EnrichmentProgressModal

@@ -183,8 +183,16 @@ export const trueLayerItems = pgTable("truelayer_items", {
   institutionName: text("institution_name").notNull(), // Bank name (e.g., "Barclays", "HSBC")
   institutionLogoUrl: text("institution_logo_url"), // Bank logo URL from TrueLayer
   accountName: text("account_name").notNull(), // Account display name (e.g., "Current Account")
-  accountType: text("account_type"), // current, savings, etc.
+  accountType: text("account_type"), // current, savings, credit_card, etc.
+  connectionType: text("connection_type").default("current_account"), // 'current_account' or 'credit_card'
   currency: text("currency").default("GBP"),
+  // Credit card specific fields
+  cardNetwork: text("card_network"), // VISA, MASTERCARD, AMEX
+  partialPan: text("partial_pan"), // Last 4 digits of card number
+  cardType: text("card_type"), // CREDIT or CHARGE
+  creditLimitCents: integer("credit_limit_cents"), // Total credit limit
+  currentBalanceCents: integer("current_balance_cents"), // Current amount owed
+  availableCreditCents: integer("available_credit_cents"), // Available credit
   accessTokenEncrypted: text("access_token_encrypted").notNull(),
   refreshTokenEncrypted: text("refresh_token_encrypted"),
   consentExpiresAt: timestamp("consent_expires_at"),
@@ -196,7 +204,8 @@ export const trueLayerItems = pgTable("truelayer_items", {
   isSideHustle: boolean("is_side_hustle").default(false), // Flag for income categorization
   // Per-account analysis summary (cached results)
   analysisSummary: jsonb("analysis_summary").$type<AccountAnalysisSummary>(),
-  connectionStatus: text("connection_status").default("active"), // 'active', 'expired', 'error'
+  connectionStatus: text("connection_status").default("active"), // 'active', 'expired', 'error', 'pending_enrichment'
+  connectionError: text("connection_error"), // Store error message for transparency
   createdAt: timestamp("created_at").defaultNow(),
 }, (table) => ({
   userAccountUnique: unique().on(table.userId, table.trueLayerAccountId),

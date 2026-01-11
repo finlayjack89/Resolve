@@ -6,7 +6,7 @@ import { analyzeBudget, analyzePersona } from "../services/budget-engine";
 import { getPersonaById, PERSONAS } from "../mock-data/truelayer-personas";
 import { budgetAnalyzeRequestSchema, type AccountAnalysisSummary } from "@shared/schema";
 import { z } from "zod";
-import { fetchAllTransactions, fetchAllDirectDebits, refreshAccessToken, encryptToken } from "../truelayer";
+import { fetchAllTransactions, fetchAllDirectDebits, fetchAllCardTransactions, refreshAccessToken, encryptToken } from "../truelayer";
 import { randomUUID } from "crypto";
 import { mapNtropyLabelsToCategory, UKBudgetCategory } from "../services/category-mapping";
 import { reconcileTransactions } from "../services/transaction-reconciliation";
@@ -223,12 +223,18 @@ export function registerBudgetAnalysisRoutes(app: Express): void {
       }
       
       const days = req.body.days || 90;
-      let transactions;
-      let directDebits;
+      let transactions: any[];
+      let directDebits: any[] = [];
       
       try {
-        transactions = await fetchAllTransactions(accessToken, true);
-        directDebits = await fetchAllDirectDebits(accessToken);
+        // Fetch transactions based on connection type
+        if (trueLayerItem.connectionType === "credit_card") {
+          transactions = await fetchAllCardTransactions(accessToken, true);
+          // Credit cards don't have direct debits
+        } else {
+          transactions = await fetchAllTransactions(accessToken, true);
+          directDebits = await fetchAllDirectDebits(accessToken);
+        }
         console.log(`[Budget Analysis] Fetched ${transactions.length} transactions and ${directDebits.length} direct debits for user ${userId}`);
       } catch (error: any) {
         console.error("Error fetching data from TrueLayer:", error);
@@ -958,8 +964,20 @@ export function registerBudgetAnalysisRoutes(app: Express): void {
           });
           
           const days = 90;
-          const transactions = await fetchAllTransactions(accessToken, true);
-          const directDebits = await fetchAllDirectDebits(accessToken);
+          
+          // Fetch transactions based on connection type
+          let transactions: any[];
+          let directDebits: any[] = [];
+          
+          if (trueLayerItem.connectionType === "credit_card") {
+            // For credit cards, fetch card transactions
+            transactions = await fetchAllCardTransactions(accessToken, true);
+            // Credit cards don't have direct debits
+          } else {
+            // For current accounts, fetch account transactions and direct debits
+            transactions = await fetchAllTransactions(accessToken, true);
+            directDebits = await fetchAllDirectDebits(accessToken);
+          }
           
           job.total = transactions.length;
           

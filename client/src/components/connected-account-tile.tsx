@@ -2,7 +2,9 @@ import { Link } from "wouter";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { RefreshCw, CheckCircle2, AlertCircle, Clock, Briefcase, ChevronRight, Trash2, Loader2 } from "lucide-react";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { RefreshCw, CheckCircle2, AlertCircle, Clock, Briefcase, ChevronRight, Trash2, Loader2, CreditCard } from "lucide-react";
+import { SiVisa, SiMastercard, SiAmericanexpress } from "react-icons/si";
 import { formatCurrency } from "@/lib/format";
 import { formatDistanceToNow } from "date-fns";
 
@@ -27,14 +29,37 @@ interface ConnectedAccountSummary {
   institutionLogoUrl: string | null;
   accountName: string;
   accountType: string | null;
+  connectionType?: string | null;
   currency: string | null;
   connectionStatus: string | null;
+  connectionError?: string | null;
   isSideHustle: boolean | null;
   lastSyncedAt: string | null;
   lastEnrichedAt: string | null;
   lastAnalyzedAt: string | null;
   transactionCount: number;
   analysisSummary: AccountAnalysisSummary | null;
+  cardNetwork?: string | null;
+  partialPan?: string | null;
+  cardType?: string | null;
+  currentBalanceCents?: number | null;
+  availableCreditCents?: number | null;
+  creditLimitCents?: number | null;
+}
+
+function CardNetworkIcon({ network }: { network: string }) {
+  const className = "h-6 w-6";
+  switch (network?.toLowerCase()) {
+    case "visa":
+      return <SiVisa className={`${className} text-blue-600`} />;
+    case "mastercard":
+      return <SiMastercard className={`${className} text-orange-500`} />;
+    case "amex":
+    case "american_express":
+      return <SiAmericanexpress className={`${className} text-blue-500`} />;
+    default:
+      return <CreditCard className={`${className} text-muted-foreground`} />;
+  }
 }
 
 interface ConnectedAccountTileProps {
@@ -51,6 +76,8 @@ export function ConnectedAccountTile({ account, currency, isRefreshing, onRefres
                      account.connectionStatus === "active" || 
                      account.connectionStatus === "pending_enrichment";
   const hasAnalysis = !!account.analysisSummary;
+  const isCreditCard = account.connectionType === "credit_card";
+  const hasError = !!account.connectionError;
   
   const lastSynced = account.lastSyncedAt 
     ? formatDistanceToNow(new Date(account.lastSyncedAt), { addSuffix: true })
@@ -58,13 +85,17 @@ export function ConnectedAccountTile({ account, currency, isRefreshing, onRefres
 
   return (
     <Card 
-      className="hover-elevate transition-all cursor-pointer group"
+      className={`hover-elevate transition-all cursor-pointer group ${hasError ? "border-destructive/50" : ""}`}
       data-testid={`card-account-${account.id}`}
     >
       <Link href={`/current-finances/${account.id}`} className="block" data-testid={`link-account-detail-${account.id}`}>
       <CardHeader className="flex flex-row items-start justify-between gap-4 space-y-0">
         <div className="flex items-center gap-3 min-w-0">
-          {account.institutionLogoUrl ? (
+          {isCreditCard && account.cardNetwork ? (
+            <div className="h-10 w-10 rounded-lg bg-gradient-to-br from-slate-800 to-slate-900 dark:from-slate-700 dark:to-slate-800 flex items-center justify-center shadow-md" data-testid={`img-card-network-${account.id}`}>
+              <CardNetworkIcon network={account.cardNetwork} />
+            </div>
+          ) : account.institutionLogoUrl ? (
             <img
               src={account.institutionLogoUrl}
               alt={account.institutionName}
@@ -83,18 +114,35 @@ export function ConnectedAccountTile({ account, currency, isRefreshing, onRefres
               {account.institutionName}
             </CardTitle>
             <CardDescription className="truncate" data-testid={`text-account-name-${account.id}`}>
-              {account.accountName}
+              {isCreditCard && account.partialPan 
+                ? `•••• ${account.partialPan}`
+                : account.accountName}
             </CardDescription>
           </div>
         </div>
         <div className="flex items-center gap-2 flex-shrink-0">
+          {isCreditCard && (
+            <Badge variant="secondary" className="gap-1" data-testid={`badge-credit-card-${account.id}`}>
+              <CreditCard className="h-3 w-3" />
+              Credit
+            </Badge>
+          )}
           {account.isSideHustle && (
             <Badge variant="secondary" className="gap-1" data-testid={`badge-side-hustle-${account.id}`}>
               <Briefcase className="h-3 w-3" />
               Side Hustle
             </Badge>
           )}
-          {isConnected ? (
+          {hasError ? (
+            <Tooltip>
+              <TooltipTrigger>
+                <AlertCircle className="h-5 w-5 text-destructive" data-testid={`icon-error-${account.id}`} />
+              </TooltipTrigger>
+              <TooltipContent className="max-w-xs">
+                <p>{account.connectionError}</p>
+              </TooltipContent>
+            </Tooltip>
+          ) : isConnected ? (
             <CheckCircle2 className="h-5 w-5 text-green-500" data-testid={`icon-connected-${account.id}`} />
           ) : (
             <AlertCircle className="h-5 w-5 text-amber-500" data-testid={`icon-disconnected-${account.id}`} />
@@ -104,7 +152,48 @@ export function ConnectedAccountTile({ account, currency, isRefreshing, onRefres
       </CardHeader>
       
       <CardContent>
-        {hasAnalysis && account.analysisSummary ? (
+        {isCreditCard ? (
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-4">
+              {account.currentBalanceCents != null && (
+                <div>
+                  <p className="text-xs text-muted-foreground">Current Balance</p>
+                  <p className="font-mono font-semibold text-amber-600 dark:text-amber-400" data-testid={`text-balance-${account.id}`}>
+                    {formatCurrency(account.currentBalanceCents, currency)}
+                  </p>
+                </div>
+              )}
+              {account.availableCreditCents != null && (
+                <div>
+                  <p className="text-xs text-muted-foreground">Available Credit</p>
+                  <p className="font-mono font-semibold text-green-600 dark:text-green-400" data-testid={`text-available-${account.id}`}>
+                    {formatCurrency(account.availableCreditCents, currency)}
+                  </p>
+                </div>
+              )}
+            </div>
+            
+            {account.creditLimitCents != null && (
+              <div className="pt-2 border-t">
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-muted-foreground" data-testid={`text-limit-${account.id}`}>
+                    Credit Limit: {formatCurrency(account.creditLimitCents, currency)}
+                  </span>
+                  <span className="text-xs text-muted-foreground flex items-center gap-1" data-testid={`text-last-synced-${account.id}`}>
+                    <Clock className="h-3 w-3" />
+                    {lastSynced}
+                  </span>
+                </div>
+              </div>
+            )}
+
+            {hasError && (
+              <div className="bg-destructive/10 text-destructive text-sm p-2 rounded-md" data-testid={`text-error-${account.id}`}>
+                {account.connectionError}
+              </div>
+            )}
+          </div>
+        ) : hasAnalysis && account.analysisSummary ? (
           <div className="space-y-3">
             <div className="grid grid-cols-2 gap-4">
               <div>
@@ -145,6 +234,11 @@ export function ConnectedAccountTile({ account, currency, isRefreshing, onRefres
                 {lastSynced}
               </span>
             </div>
+            {hasError && (
+              <div className="bg-destructive/10 text-destructive text-sm p-2 rounded-md" data-testid={`text-error-${account.id}`}>
+                {account.connectionError}
+              </div>
+            )}
           </div>
         )}
       </CardContent>
