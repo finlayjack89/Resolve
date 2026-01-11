@@ -172,10 +172,19 @@ export function registerTrueLayerRoutes(app: Express) {
             const balanceResponse = await fetchCardBalance(accessToken, trueLayerAccountId);
             if (balanceResponse.results && balanceResponse.results.length > 0) {
               const balance = balanceResponse.results[0];
-              currentBalanceCents = Math.round(balance.current * 100);
-              availableCreditCents = Math.round(balance.available * 100);
-              creditLimitCents = balance.credit_limit ? Math.round(balance.credit_limit * 100) : 
-                                (currentBalanceCents + availableCreditCents);
+              // Safely convert to cents with null checks to avoid NaN
+              if (typeof balance.current === 'number' && !isNaN(balance.current)) {
+                currentBalanceCents = Math.round(balance.current * 100);
+              }
+              if (typeof balance.available === 'number' && !isNaN(balance.available)) {
+                availableCreditCents = Math.round(balance.available * 100);
+              }
+              if (typeof balance.credit_limit === 'number' && !isNaN(balance.credit_limit)) {
+                creditLimitCents = Math.round(balance.credit_limit * 100);
+              } else if (currentBalanceCents !== null && availableCreditCents !== null) {
+                // Calculate credit limit from current + available if not provided
+                creditLimitCents = currentBalanceCents + availableCreditCents;
+              }
             }
           } catch (balanceError) {
             console.log(`[TrueLayer] Could not fetch balance for card ${trueLayerAccountId}:`, balanceError);
