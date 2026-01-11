@@ -28,7 +28,7 @@ const CREDIT_CARD_PROVIDERS = USE_SANDBOX
 
 // Scopes for different connection types
 const CURRENT_ACCOUNT_SCOPES = "accounts balance transactions direct_debits offline_access";
-const CREDIT_CARD_SCOPES = "info cards cards:transactions balance offline_access";
+const CREDIT_CARD_SCOPES = "cards balance transactions offline_access";
 
 export interface TrueLayerTokenResponse {
   access_token: string;
