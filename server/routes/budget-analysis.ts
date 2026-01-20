@@ -6,7 +6,7 @@ import { analyzeBudget, analyzePersona } from "../services/budget-engine";
 import { getPersonaById, PERSONAS } from "../mock-data/truelayer-personas";
 import { budgetAnalyzeRequestSchema, type AccountAnalysisSummary } from "@shared/schema";
 import { z } from "zod";
-import { fetchAllTransactions, fetchAllDirectDebits, fetchAllCardTransactions, refreshAccessToken, encryptToken } from "../truelayer";
+import { fetchAllTransactions, fetchAllDirectDebits, fetchCardTransactions, refreshAccessToken, encryptToken } from "../truelayer";
 import { randomUUID } from "crypto";
 import { mapNtropyLabelsToCategory, UKBudgetCategory } from "../services/category-mapping";
 import { reconcileTransactions } from "../services/transaction-reconciliation";
@@ -229,7 +229,8 @@ export function registerBudgetAnalysisRoutes(app: Express): void {
       try {
         // Fetch transactions based on connection type
         if (trueLayerItem.connectionType === "credit_card") {
-          transactions = await fetchAllCardTransactions(accessToken, true);
+          const txResponse = await fetchCardTransactions(accessToken, trueLayerItem.trueLayerAccountId);
+          transactions = txResponse.results || [];
           // Credit cards don't have direct debits
         } else {
           transactions = await fetchAllTransactions(accessToken, true);
@@ -970,8 +971,9 @@ export function registerBudgetAnalysisRoutes(app: Express): void {
           let directDebits: any[] = [];
           
           if (trueLayerItem.connectionType === "credit_card") {
-            // For credit cards, fetch card transactions
-            transactions = await fetchAllCardTransactions(accessToken, true);
+            // For credit cards, fetch card transactions for this specific card
+            const txResponse = await fetchCardTransactions(accessToken, trueLayerItem.trueLayerAccountId);
+            transactions = txResponse.results || [];
             // Credit cards don't have direct debits
           } else {
             // For current accounts, fetch account transactions and direct debits

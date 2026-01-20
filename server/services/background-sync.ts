@@ -12,7 +12,8 @@ import { storage } from "../storage";
 import { 
   fetchAllTransactions, 
   fetchAccounts,
-  refreshAccessToken 
+  refreshAccessToken,
+  fetchCardTransactions
 } from "../truelayer";
 import { encryptToken, decryptToken } from "../encryption";
 import type { TrueLayerItem, InsertEnrichedTransaction, AccountAnalysisSummary, EnrichedTransaction } from "@shared/schema";
@@ -434,10 +435,16 @@ async function syncAccount(item: TrueLayerItem): Promise<void> {
       }
     }
     
-    // Standard flow: Fetch transactions from TrueLayer (90 days)
+    // Standard flow: Fetch transactions from TrueLayer
     let transactions: any[] = [];
     try {
-      transactions = await fetchAllTransactions(accessToken, 90);
+      // Route based on connection type - credit cards use different API
+      if (item.connectionType === "credit_card") {
+        const txResponse = await fetchCardTransactions(accessToken, item.trueLayerAccountId);
+        transactions = txResponse.results || [];
+      } else {
+        transactions = await fetchAllTransactions(accessToken, true);
+      }
       console.log(`[Background Sync] Fetched ${transactions.length} transactions for account ${accountId}`);
     } catch (fetchError: any) {
       // If SCA exceeded, the account needs re-authentication
