@@ -12,6 +12,16 @@ const REFUND_KEYWORDS = [
   "REVERSAL",
 ];
 
+// Marketplace merchants where refunds may not include standard refund keywords
+const MARKETPLACE_MERCHANTS = [
+  "VINTED",
+  "EBAY",
+  "DEPOP",
+  "POSHMARK",
+  "MERCARI",
+  "ETSY",
+];
+
 // Keywords indicating a bounced/returned direct debit
 const BOUNCE_KEYWORDS = [
   "DIRECT DEBIT RETURNED",
@@ -27,6 +37,11 @@ const BOUNCE_KEYWORDS = [
 function hasBounceKeyword(description: string): boolean {
   const upper = description.toUpperCase();
   return BOUNCE_KEYWORDS.some((keyword) => upper.includes(keyword));
+}
+
+function isMarketplaceMerchant(tx: EnrichedTransaction): boolean {
+  const description = (tx.merchantCleanName || tx.originalDescription).toUpperCase();
+  return MARKETPLACE_MERCHANTS.some((merchant) => description.includes(merchant));
 }
 
 interface ReconciliationResult {
@@ -168,6 +183,53 @@ export async function reconcileTransactions(userId: string): Promise<Reconciliat
       transactionsUpdated++;
       
       console.log(`[Reconciliation] Detected ${transactionType}: ${tx.originalDescription.substring(0, 40)}... (${tx.amountCents / 100})`);
+    }
+  }
+  
+  // PHASE 2b: Detect marketplace refunds (Vinted, eBay, Depop, etc.)
+  // These are incoming transactions from known marketplace merchants that match earlier outgoing purchases
+  // Marketplace refunds often don't include standard refund keywords
+  for (const inTx of incoming) {
+    if (processedIds.has(inTx.id)) continue;
+    
+    // Only process if this is from a known marketplace merchant
+    if (!isMarketplaceMerchant(inTx)) continue;
+    
+    // Look for matching outgoing purchase (same marketplace, similar amount, within 90 days)
+    let linkedOriginalId: string | null = null;
+    
+    for (const outTx of outgoing) {
+      if (processedIds.has(outTx.id)) continue;
+      
+      const within90Days = daysBetween(inTx.transactionDate, outTx.transactionDate) <= 90;
+      const similarAmount = amountWithin10Percent(inTx.amountCents, outTx.amountCents);
+      const sameMarketplace = isMarketplaceMerchant(outTx) && merchantMatches(inTx, outTx);
+      const outTxIsEarlier = new Date(outTx.transactionDate) < new Date(inTx.transactionDate);
+      
+      if (within90Days && similarAmount && sameMarketplace && outTxIsEarlier) {
+        linkedOriginalId = outTx.id;
+        break;
+      }
+    }
+    
+    // Only mark as marketplace refund if we found a matching original purchase
+    if (linkedOriginalId) {
+      await storage.updateEnrichedTransactionReconciliation(inTx.id, {
+        transactionType: "refund",
+        linkedTransactionId: linkedOriginalId,
+        excludeFromAnalysis: true,
+      });
+      
+      await storage.updateEnrichedTransactionReconciliation(linkedOriginalId, {
+        excludeFromAnalysis: true,
+      });
+      
+      processedIds.add(inTx.id);
+      processedIds.add(linkedOriginalId);
+      refundsDetected++;
+      transactionsUpdated += 2;
+      
+      console.log(`[Reconciliation] Detected marketplace refund: ${inTx.originalDescription.substring(0, 40)}... (${inTx.amountCents / 100})`);
     }
   }
   
