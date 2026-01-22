@@ -48,6 +48,7 @@ export enum MembershipFeeFrequency {
 
 // Current Finances - Per-account analysis summary (stored as JSONB)
 export interface AccountAnalysisSummary {
+  // Historical averages (from CLOSED months only - excludes current incomplete month)
   averageMonthlyIncomeCents: number;
   employmentIncomeCents: number;
   otherIncomeCents: number;
@@ -64,8 +65,21 @@ export interface AccountAnalysisSummary {
     discretionary: Array<{ description: string; amountCents: number; category: string }>;
     debtPayments: Array<{ description: string; amountCents: number; category: string }>;
   };
-  analysisMonths: number;
+  // Closed period analysis metadata
+  closedMonthsAnalyzed: number; // Number of full months used for historical averages (capped at 6)
+  analysisMonths: number; // Legacy field - kept for backwards compatibility
   lastUpdated: string;
+  // Current month pacing metrics (from activeMonth transactions)
+  currentMonthPacing: {
+    currentMonthSpendCents: number; // Total outgoing spend this month so far
+    currentMonthIncomeCents: number; // Total incoming income this month so far
+    projectedMonthSpendCents: number; // Projected spend by end of month
+    projectedMonthIncomeCents: number; // Projected income by end of month
+    daysPassed: number; // Days elapsed in current month
+    totalDaysInMonth: number; // Total days in current month
+    monthStartDate: string; // First day of current month (ISO date)
+    monthEndDate: string; // Last day of current month (ISO date)
+  };
 }
 
 // Database Tables

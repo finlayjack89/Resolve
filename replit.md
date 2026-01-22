@@ -50,6 +50,13 @@ Preferred communication style: Simple, everyday language.
 - **Re-enrichment Feature**: Existing transactions can be re-processed through the full enrichment cascade without requiring a new TrueLayer connection. Uses POST `/api/current-finances/account/:id/re-enrich` endpoint. Supports testing enrichment changes and triggering higher layers (Nylas/Sherlock) for low-confidence transactions.
 - **Recalibration Endpoint**: POST `/api/current-finances/account/:id/recalibrate` forces recalculation of analysisSummary from existing transactions without requiring TrueLayer sync or Python enrichment. Useful when transaction flags (like excludeFromAnalysis) have been updated or budget calculation logic has changed.
 - **PayPal/Amazon Confidence Penalty**: Payment processors (PayPal, Amazon, eBay, Klarna, Clearpay, Afterpay) detected in original bank description trigger 0.5x confidence penalty, dropping from 0.80 to 0.40 and triggering Layer 2 (Context Hunter) for better categorization.
+- **Closed-Period Budget Analysis (Phase 3)**: Statistically accurate Safe-to-Spend calculation:
+  - Transactions split into `closedHistory` (complete past months) and `activeMonth` (current partial month)
+  - Historical averages calculated from ONLY closed history for statistical accuracy
+  - `closedMonthsAnalyzed` field indicates number of full months used (capped at 6)
+  - `currentMonthPacing` nested object contains: currentMonthSpendCents, currentMonthIncomeCents, projectedMonthSpendCents, projectedMonthIncomeCents, daysPassed, totalDaysInMonth, monthStartDate, monthEndDate
+  - Edge case: When no closed history exists (new user in first month), projections from activeMonth are used as estimates with `analysisMonths=0` to indicate projected data
+  - Legacy `analysisMonths` field preserved for backwards compatibility
 - **AI Research System**: Claude Sonnet 4.5 for automated lender rule discovery with human verification and intelligent caching.
 - **Python Backend Integration**: FastAPI runs as a child process of the Node.js server, utilizing Google OR-Tools CP-SAT solver. Includes health checks, retry logic, and auto-restart.
 

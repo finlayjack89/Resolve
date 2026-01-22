@@ -111,7 +111,9 @@ export async function recalibrateAccountBudget(item: TrueLayerItem): Promise<voi
 
 /**
  * Compute AccountAnalysisSummary from enriched transactions
- * Filters out transactions marked for exclusion (transfers, bounced payments, etc.)
+ * Phase 3: Splits transactions into closed history (complete months) and active month (current partial month)
+ * Historical averages are calculated from ONLY closed history for statistical accuracy
+ * Pacing metrics track current month trajectory
  */
 function computeAccountAnalysisSummary(
   transactions: EnrichedTransaction[],
@@ -122,6 +124,30 @@ function computeAccountAnalysisSummary(
   const analysisTransactions = transactions.filter(tx => !tx.excludeFromAnalysis);
   console.log(`[Budget Recalibration] Analyzing ${analysisTransactions.length} of ${transactions.length} transactions (${transactions.length - analysisTransactions.length} excluded)`);
   
+  // Phase 3: Split transactions into closed history vs active month
+  const now = new Date();
+  const currentMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+  const currentMonthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0); // Last day of current month
+  const lastDayOfLastMonth = new Date(now.getFullYear(), now.getMonth(), 0);
+  
+  // Split transactions into two arrays
+  const closedHistory: EnrichedTransaction[] = [];
+  const activeMonth: EnrichedTransaction[] = [];
+  
+  for (const tx of analysisTransactions) {
+    if (!tx.transactionDate) continue;
+    const txDate = new Date(tx.transactionDate);
+    
+    if (txDate >= currentMonthStart) {
+      activeMonth.push(tx);
+    } else {
+      closedHistory.push(tx);
+    }
+  }
+  
+  console.log(`[Budget Recalibration] Split: ${closedHistory.length} closed history, ${activeMonth.length} active month`);
+  
+  // Calculate historical averages from CLOSED history only
   const incomeItems: Array<{ description: string; amountCents: number; category: string }> = [];
   const fixedCostsItems: Array<{ description: string; amountCents: number; category: string }> = [];
   const essentialsItems: Array<{ description: string; amountCents: number; category: string }> = [];
@@ -137,7 +163,8 @@ function computeAccountAnalysisSummary(
   let discretionaryCents = 0;
   let debtPaymentsCents = 0;
 
-  for (const tx of analysisTransactions) {
+  // Process ONLY closed history for historical averages
+  for (const tx of closedHistory) {
     const item = {
       description: tx.merchantCleanName || tx.originalDescription,
       amountCents: tx.amountCents,
@@ -178,26 +205,127 @@ function computeAccountAnalysisSummary(
     }
   }
 
-  // Use filtered transactions for date range to avoid excluded transactions diluting averages
-  const dateRange = getTransactionDateRange(analysisTransactions);
-  const analysisMonths = Math.max(1, dateRange);
+  // Calculate current month pacing metrics from activeMonth transactions FIRST
+  // (needed for fallback when no closed history exists)
+  let currentMonthSpendCents = 0;
+  let currentMonthIncomeCents = 0;
+  
+  for (const tx of activeMonth) {
+    if (tx.entryType === 'incoming') {
+      currentMonthIncomeCents += tx.amountCents;
+    } else {
+      currentMonthSpendCents += tx.amountCents;
+    }
+  }
+  
+  // Calculate pacing projections
+  const daysPassed = Math.max(1, now.getDate()); // Days elapsed in current month (1-indexed)
+  const totalDaysInMonth = currentMonthEnd.getDate();
+  const dailySpendRate = currentMonthSpendCents / daysPassed;
+  const dailyIncomeRate = currentMonthIncomeCents / daysPassed;
+  const projectedMonthSpendCents = Math.round(dailySpendRate * totalDaysInMonth);
+  const projectedMonthIncomeCents = Math.round(dailyIncomeRate * totalDaysInMonth);
+  
+  console.log(`[Budget Recalibration] Pacing: Day ${daysPassed}/${totalDaysInMonth}, Spend: ${currentMonthSpendCents} -> ${projectedMonthSpendCents} (projected)`);
 
-  const averageMonthlyIncomeCents = Math.round(totalIncomeCents / analysisMonths);
-  const avgFixedCents = Math.round(fixedCostsCents / analysisMonths);
-  const avgEssentialsCents = Math.round(essentialsCents / analysisMonths);
-  const avgDiscretionaryCents = Math.round(discretionaryCents / analysisMonths);
-  const avgDebtCents = Math.round(debtPaymentsCents / analysisMonths);
+  // Calculate number of full months in closed history (getClosedMonthCount already caps at 6)
+  const closedMonthsAnalyzed = getClosedMonthCount(closedHistory, lastDayOfLastMonth);
+  
+  // Calculate averages - SPECIAL CASE: when no closed history exists (e.g., new user in first month)
+  // Fall back to projected current month values as the "average" estimate
+  let averageMonthlyIncomeCents: number;
+  let avgFixedCents: number;
+  let avgEssentialsCents: number;
+  let avgDiscretionaryCents: number;
+  let avgDebtCents: number;
+  let analysisMonths: number;
+  
+  if (closedMonthsAnalyzed === 0) {
+    // No closed history - use current month projections as estimates
+    console.log(`[Budget Recalibration] No closed history - using current month projections as estimates`);
+    analysisMonths = 0; // Indicate no full months analyzed
+    
+    // Project current partial month to full month for average estimates
+    // This gives new users useful feedback while clearly marked as "projected"
+    averageMonthlyIncomeCents = projectedMonthIncomeCents;
+    
+    // For spending categories, calculate projected totals from activeMonth breakdown
+    let projectedFixedCents = 0;
+    let projectedEssentialsCents = 0;
+    let projectedDiscretionaryCents = 0;
+    let projectedDebtCents = 0;
+    
+    for (const tx of activeMonth) {
+      if (tx.entryType !== 'incoming') {
+        const projectedAmount = Math.round((tx.amountCents / daysPassed) * totalDaysInMonth);
+        switch (tx.budgetCategory) {
+          case 'fixed_costs': projectedFixedCents += projectedAmount; break;
+          case 'essentials': projectedEssentialsCents += projectedAmount; break;
+          case 'debt': projectedDebtCents += projectedAmount; break;
+          default: projectedDiscretionaryCents += projectedAmount; break;
+        }
+      }
+    }
+    
+    avgFixedCents = projectedFixedCents;
+    avgEssentialsCents = projectedEssentialsCents;
+    avgDiscretionaryCents = projectedDiscretionaryCents;
+    avgDebtCents = projectedDebtCents;
+  } else {
+    // Normal case: use closed history for proper averages
+    analysisMonths = closedMonthsAnalyzed;
+    averageMonthlyIncomeCents = Math.round(totalIncomeCents / analysisMonths);
+    avgFixedCents = Math.round(fixedCostsCents / analysisMonths);
+    avgEssentialsCents = Math.round(essentialsCents / analysisMonths);
+    avgDiscretionaryCents = Math.round(discretionaryCents / analysisMonths);
+    avgDebtCents = Math.round(debtPaymentsCents / analysisMonths);
+  }
 
   // Safe-to-spend = Income - Fixed Costs - Variable Essentials (matches budget-engine.ts)
   const safeToSpendCents = Math.max(0, averageMonthlyIncomeCents - avgFixedCents - avgEssentialsCents);
   // Available for debt is what's left after discretionary spending
   const availableForDebtCents = Math.max(0, safeToSpendCents - avgDiscretionaryCents);
 
+  // Calculate income breakdown averages (handle zero-division case)
+  let avgEmploymentIncomeCents: number;
+  let avgOtherIncomeCents: number;
+  let avgSideHustleIncomeCents: number;
+  
+  if (closedMonthsAnalyzed === 0) {
+    // No closed history - project income breakdown from active month
+    // Calculate proportions from current month income for each category
+    let projectedEmployment = 0;
+    let projectedOther = 0;
+    let projectedSideHustle = 0;
+    
+    for (const tx of activeMonth) {
+      if (tx.entryType === 'incoming') {
+        const projectedAmount = Math.round((tx.amountCents / daysPassed) * totalDaysInMonth);
+        if (isSideHustle) {
+          projectedSideHustle += projectedAmount;
+        } else if (tx.ukCategory === 'employment' || tx.budgetCategory === 'income') {
+          projectedEmployment += projectedAmount;
+        } else {
+          projectedOther += projectedAmount;
+        }
+      }
+    }
+    
+    avgEmploymentIncomeCents = projectedEmployment;
+    avgOtherIncomeCents = projectedOther;
+    avgSideHustleIncomeCents = projectedSideHustle;
+  } else {
+    // Normal case: divide closed history totals by months analyzed
+    avgEmploymentIncomeCents = Math.round(employmentIncomeCents / analysisMonths);
+    avgOtherIncomeCents = Math.round(otherIncomeCents / analysisMonths);
+    avgSideHustleIncomeCents = Math.round(sideHustleIncomeCents / analysisMonths);
+  }
+
   return {
     averageMonthlyIncomeCents,
-    employmentIncomeCents: Math.round(employmentIncomeCents / analysisMonths),
-    otherIncomeCents: Math.round(otherIncomeCents / analysisMonths),
-    sideHustleIncomeCents: Math.round(sideHustleIncomeCents / analysisMonths),
+    employmentIncomeCents: avgEmploymentIncomeCents,
+    otherIncomeCents: avgOtherIncomeCents,
+    sideHustleIncomeCents: avgSideHustleIncomeCents,
     fixedCostsCents: avgFixedCents,
     essentialsCents: avgEssentialsCents,
     discretionaryCents: avgDiscretionaryCents,
@@ -210,31 +338,44 @@ function computeAccountAnalysisSummary(
       discretionary: discretionaryItems,
       debtPayments: debtPaymentsItems,
     },
-    analysisMonths,
+    closedMonthsAnalyzed,
+    analysisMonths, // Legacy field for backwards compatibility (0 = projected data)
     lastUpdated: new Date().toISOString(),
+    currentMonthPacing: {
+      currentMonthSpendCents,
+      currentMonthIncomeCents,
+      projectedMonthSpendCents,
+      projectedMonthIncomeCents,
+      daysPassed,
+      totalDaysInMonth,
+      monthStartDate: currentMonthStart.toISOString().split('T')[0],
+      monthEndDate: currentMonthEnd.toISOString().split('T')[0],
+    },
   };
 }
 
 /**
- * Calculate the date range in months from the transactions
+ * Calculate the number of full months represented in closed history transactions
+ * Counts distinct year-month combinations, capped at 6 months
  */
-function getTransactionDateRange(transactions: EnrichedTransaction[]): number {
-  if (transactions.length === 0) return 1;
+function getClosedMonthCount(transactions: EnrichedTransaction[], lastDayOfLastMonth: Date): number {
+  if (transactions.length === 0) return 0;
   
-  const dates = transactions
-    .map(tx => tx.transactionDate ? new Date(tx.transactionDate) : null)
-    .filter((d): d is Date => d !== null);
+  const monthSet = new Set<string>();
   
-  if (dates.length === 0) return 1;
+  for (const tx of transactions) {
+    if (!tx.transactionDate) continue;
+    const txDate = new Date(tx.transactionDate);
+    // Only count months that are fully closed (before current month)
+    if (txDate <= lastDayOfLastMonth) {
+      const monthKey = `${txDate.getFullYear()}-${String(txDate.getMonth() + 1).padStart(2, '0')}`;
+      monthSet.add(monthKey);
+    }
+  }
   
-  const minDate = new Date(Math.min(...dates.map(d => d.getTime())));
-  const maxDate = new Date(Math.max(...dates.map(d => d.getTime())));
-  
-  const diffMonths = (maxDate.getFullYear() - minDate.getFullYear()) * 12 
-    + (maxDate.getMonth() - minDate.getMonth()) + 1;
-  
-  return Math.max(1, diffMonths);
+  return Math.min(6, monthSet.size);
 }
+
 
 /**
  * Acquire a sync lock for an account
