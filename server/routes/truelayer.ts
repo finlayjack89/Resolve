@@ -194,15 +194,16 @@ export function registerTrueLayerRoutes(app: Express) {
           const existingItem = await storage.getTrueLayerItemByAccountId(userId as string, trueLayerAccountId);
 
           if (existingItem) {
-            // Update existing card with new tokens
+            // Update existing card with new tokens - set to STAGED for batch processing
             await storage.updateTrueLayerItem(existingItem.id, {
               accessTokenEncrypted: encryptToken(accessToken),
               refreshTokenEncrypted: tokenResponse.refresh_token 
                 ? encryptToken(tokenResponse.refresh_token) 
                 : existingItem.refreshTokenEncrypted,
               consentExpiresAt,
-              connectionStatus: "pending_enrichment",
+              connectionStatus: "active",
               connectionError: null,
+              processingStatus: "STAGED",
               institutionName,
               accountName,
               accountType: "credit_card",
@@ -225,7 +226,7 @@ export function registerTrueLayerRoutes(app: Express) {
               // Ignore if no transactions to clear
             }
           } else {
-            // Create new TrueLayerItem for this card
+            // Create new TrueLayerItem for this card - set to STAGED for batch processing
             await storage.createTrueLayerItem({
               userId: userId as string,
               trueLayerAccountId,
@@ -247,8 +248,9 @@ export function registerTrueLayerRoutes(app: Express) {
               consentExpiresAt,
               provider: card.provider?.provider_id || null,
               lastSyncedAt: null,
-              connectionStatus: "pending_enrichment",
+              connectionStatus: "active",
               connectionError: null,
+              processingStatus: "STAGED",
             });
             newAccountsCreated++;
             processedAccountIds.push(trueLayerAccountId);
@@ -283,15 +285,16 @@ export function registerTrueLayerRoutes(app: Express) {
           const existingItem = await storage.getTrueLayerItemByAccountId(userId as string, trueLayerAccountId);
 
           if (existingItem) {
-            // Update existing account with new tokens
+            // Update existing account with new tokens - set to STAGED for batch processing
             await storage.updateTrueLayerItem(existingItem.id, {
               accessTokenEncrypted: encryptToken(accessToken),
               refreshTokenEncrypted: tokenResponse.refresh_token 
                 ? encryptToken(tokenResponse.refresh_token) 
                 : existingItem.refreshTokenEncrypted,
               consentExpiresAt,
-              connectionStatus: "pending_enrichment",
+              connectionStatus: "active",
               connectionError: null,
+              processingStatus: "STAGED",
               institutionName,
               accountName,
               accountType,
@@ -308,7 +311,7 @@ export function registerTrueLayerRoutes(app: Express) {
               // Ignore if no transactions to clear
             }
           } else {
-            // Create new TrueLayerItem for this account
+            // Create new TrueLayerItem for this account - set to STAGED for batch processing
             await storage.createTrueLayerItem({
               userId: userId as string,
               trueLayerAccountId,
@@ -324,8 +327,9 @@ export function registerTrueLayerRoutes(app: Express) {
               consentExpiresAt,
               provider: account.provider?.provider_id || null,
               lastSyncedAt: null,
-              connectionStatus: "pending_enrichment",
+              connectionStatus: "active",
               connectionError: null,
+              processingStatus: "STAGED",
             });
             newAccountsCreated++;
             processedAccountIds.push(trueLayerAccountId);
@@ -336,92 +340,10 @@ export function registerTrueLayerRoutes(app: Express) {
         console.log(`[TrueLayer] Callback complete for user ${userId}: ${newAccountsCreated} new, ${existingAccountsUpdated} updated`);
       }
 
-      // CRITICAL: Fetch transactions IMMEDIATELY within the 5-minute SCA window
-      // TrueLayer's SCA exemption expires 5 minutes after authentication
-      // If we don't fetch now, subsequent attempts will fail with sca_exceeded error
-      console.log(`[TrueLayer] Fetching transactions immediately (within SCA window) for ${connectionType}...`);
-      
-      let totalTransactionsFetched = 0;
-      const allItems = await storage.getTrueLayerItemsByUserId(userId as string);
-      
-      // Use dynamic date range for transaction fetch
-      const now = new Date();
-      const fromDate = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000);
-      const from = fromDate.toISOString().split("T")[0];
-      const to = now.toISOString().split("T")[0];
-      
-      for (const item of allItems) {
-        // Only fetch for newly created/updated accounts that match this session
-        if (!processedAccountIds.includes(item.trueLayerAccountId)) {
-          continue;
-        }
-        
-        try {
-          console.log(`[TrueLayer] Fetching transactions for ${item.institutionName} - ${item.accountName} (${item.trueLayerAccountId})...`);
-          
-          let transactions: any[] = [];
-          
-          // Use the appropriate fetch method based on connection type
-          if (item.connectionType === "credit_card") {
-            // Fetch card transactions using /cards endpoint
-            const txResponse = await fetchCardTransactions(accessToken, item.trueLayerAccountId, from, to);
-            transactions = txResponse.results || [];
-          } else {
-            // Fetch account transactions using /accounts endpoint
-            const txResponse = await fetchTransactions(accessToken, item.trueLayerAccountId, from, to);
-            transactions = txResponse.results || [];
-          }
-          
-          console.log(`[TrueLayer] Fetched ${transactions.length} transactions for ${item.connectionType || "account"} ${item.id}`);
-          
-          if (transactions.length > 0) {
-            // Store transactions with proper schema fields
-            const rawTransactionsToStore = transactions.map((tx: any) => {
-              // For credit cards, debits (purchases) have negative amounts, credits (payments) are positive
-              const isIncoming = tx.amount > 0 || tx.transaction_type === "CREDIT";
-              return {
-                userId: userId as string,
-                trueLayerItemId: item.id,
-                trueLayerTransactionId: String(tx.transaction_id),
-                originalDescription: tx.description || "",
-                amountCents: Math.round(Math.abs(tx.amount) * 100),
-                currency: tx.currency || "GBP",
-                entryType: isIncoming ? "incoming" : "outgoing",
-                transactionDate: tx.timestamp?.split("T")[0] || new Date().toISOString().split("T")[0],
-                // Set default categories - enrichment will update these
-                ukCategory: tx.transaction_category || (isIncoming ? "income" : "uncategorized"),
-                budgetGroup: isIncoming ? "income" : "discretionary",
-                isRecurring: false,
-                enrichmentStage: "pending",
-                ntropyConfidence: null,
-                enrichmentSource: null,
-                labels: tx.transaction_classification || [],
-              };
-            });
-            
-            // Store transactions - saveEnrichedTransactions handles duplicates
-            try {
-              await storage.saveEnrichedTransactions(rawTransactionsToStore);
-              totalTransactionsFetched += transactions.length;
-              console.log(`[TrueLayer] Stored ${transactions.length} raw transactions for ${item.connectionType || "account"} ${item.id}`);
-            } catch (insertError: any) {
-              console.log(`[TrueLayer] Error storing transactions: ${insertError.message}`);
-              // Store the error on the item for transparency
-              await storage.updateTrueLayerItem(item.id, {
-                connectionError: `Failed to store transactions: ${insertError.message}`,
-              });
-            }
-          }
-        } catch (fetchError: any) {
-          console.error(`[TrueLayer] Failed to fetch transactions for ${item.id}:`, fetchError.message);
-          // Store the error on the item for transparency
-          await storage.updateTrueLayerItem(item.id, {
-            connectionError: `Failed to fetch transactions: ${fetchError.message}`,
-          });
-        }
-      }
-      
-      console.log(`[TrueLayer] SCA fetch complete: ${totalTransactionsFetched} total transactions stored`);
+      // STAGED ONBOARDING: Do NOT fetch transactions here
+      // Transaction fetching is now deferred to the batch initialization endpoint
+      // This allows users to connect multiple accounts before triggering analysis
+      console.log(`[TrueLayer] Staged onboarding: ${processedAccountIds.length} accounts ready for batch initialization`);
 
       res.redirect(`${returnUrl}?connected=true&type=${connectionType}`);
     } catch (error: any) {
@@ -471,6 +393,7 @@ export function registerTrueLayerRoutes(app: Express) {
           connectionStatus: isExpired ? "expired" : (item.connectionStatus || "active"),
           connectionError: item.connectionError,
           isSideHustle: item.isSideHustle,
+          processingStatus: item.processingStatus || "STAGED",
           // Credit card specific fields
           cardNetwork: item.cardNetwork,
           partialPan: item.partialPan,
@@ -488,11 +411,20 @@ export function registerTrueLayerRoutes(app: Express) {
       );
       const anyNeedsReauth = accounts.some(a => a.needsReauth);
 
+      const stagedCount = accounts.filter(a => a.processingStatus === "STAGED").length;
+      const analyzingCount = accounts.filter(a => a.processingStatus === "ANALYZING").length;
+      const activeCount = accounts.filter(a => a.processingStatus === "ACTIVE").length;
+      const errorCount = accounts.filter(a => a.processingStatus === "ERROR").length;
+
       res.json({
         connected: anyActive,
         accounts,
         needsReauth: anyNeedsReauth,
         totalAccounts: accounts.length,
+        stagedCount,
+        analyzingCount,
+        activeCount,
+        errorCount,
       });
     } catch (error: any) {
       console.error("[TrueLayer] Status check error:", error);

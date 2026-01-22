@@ -10,6 +10,14 @@ export enum AccountType {
   LOAN = "Loan"
 }
 
+// Processing status for TrueLayer connected accounts - staged onboarding flow
+export enum ProcessingStatus {
+  STAGED = "STAGED",           // Account connected but not yet analyzed
+  ANALYZING = "ANALYZING",     // Currently fetching transactions and analyzing
+  ACTIVE = "ACTIVE",           // Analysis complete, account ready for use
+  ERROR = "ERROR"              // Error occurred during processing
+}
+
 // Bucket types for credit card balance segments
 export enum BucketType {
   PURCHASES = "Purchases",
@@ -206,6 +214,7 @@ export const trueLayerItems = pgTable("truelayer_items", {
   analysisSummary: jsonb("analysis_summary").$type<AccountAnalysisSummary>(),
   connectionStatus: text("connection_status").default("active"), // 'active', 'expired', 'error', 'pending_enrichment'
   connectionError: text("connection_error"), // Store error message for transparency
+  processingStatus: text("processing_status").default("STAGED"), // 'STAGED', 'ANALYZING', 'ACTIVE', 'ERROR' - staged onboarding flow
   createdAt: timestamp("created_at").defaultNow(),
 }, (table) => ({
   userAccountUnique: unique().on(table.userId, table.trueLayerAccountId),

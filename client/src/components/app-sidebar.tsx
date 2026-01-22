@@ -1,7 +1,6 @@
 import { Home, CreditCard, BarChart3, LogOut, Calendar, Wallet, Shield } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import { useAuth } from "@/lib/auth-context";
-import { logoImage } from "@/components/logo";
 import {
   Sidebar,
   SidebarContent,
@@ -32,8 +31,7 @@ export function AppSidebar() {
     <Sidebar>
       <SidebarHeader className="border-b border-sidebar-border">
         <div className="flex items-center gap-2 px-4 py-3">
-          <img src={logoImage} alt="Resolve" className="h-8 w-8 object-contain" />
-          <span className="font-semibold">Resolve</span>
+          <span className="text-xl font-bold">Resolve</span>
         </div>
       </SidebarHeader>
       

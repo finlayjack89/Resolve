@@ -11,6 +11,7 @@ import { z } from "zod";
 import { storage } from "../storage";
 import { requireAuth } from "../auth";
 import type { TrueLayerItem, EnrichedTransaction, AccountAnalysisSummary } from "@shared/schema";
+import { ProcessingStatus } from "@shared/schema";
 import { 
   mapNtropyLabelsToCategory, 
   UKBudgetCategory,
@@ -24,6 +25,12 @@ import {
   isDebtPaymentCategory,
 } from "../services/category-mapping";
 import { triggerAccountSync, isAccountSyncing, recalibrateAccountBudget } from "../services/background-sync";
+import {
+  fetchTransactions,
+  fetchCardTransactions,
+  calculateDynamicDateRange,
+  decryptToken,
+} from "../truelayer";
 
 // Response types for the Current Finances API
 export interface ConnectedAccountSummary {
@@ -501,6 +508,138 @@ export function registerCurrentFinancesRoutes(app: Express): void {
     } catch (error: any) {
       console.error("[Current Finances] Error recalibrating account:", error);
       res.status(500).json({ message: "Failed to recalibrate budget" });
+    }
+  });
+
+  /**
+   * POST /api/finances/initialize-analysis
+   * Batch initialization endpoint for staged onboarding flow.
+   * Fetches transactions for ALL STAGED accounts in parallel and updates them to ACTIVE.
+   * This is called after the user has connected all their accounts and is ready to generate their report.
+   */
+  app.post("/api/finances/initialize-analysis", requireAuth, async (req, res) => {
+    try {
+      const userId = (req.user as any).id;
+      
+      console.log(`[Initialize Analysis] Starting batch initialization for user ${userId}`);
+      
+      // Step 1: Query all STAGED accounts for this user
+      const allItems = await storage.getTrueLayerItemsByUserId(userId);
+      const stagedItems = allItems.filter(item => item.processingStatus === ProcessingStatus.STAGED);
+      
+      if (stagedItems.length === 0) {
+        return res.status(400).json({ 
+          message: "No staged accounts found. Please connect at least one bank account first.",
+          success: false
+        });
+      }
+      
+      console.log(`[Initialize Analysis] Found ${stagedItems.length} staged accounts to process`);
+      
+      // Step 2: Update all accounts to ANALYZING status
+      await Promise.all(
+        stagedItems.map(item => 
+          storage.updateTrueLayerItem(item.id, { processingStatus: ProcessingStatus.ANALYZING })
+        )
+      );
+      
+      // Step 3: Fetch transactions for ALL accounts in parallel
+      const { from, to } = calculateDynamicDateRange();
+      
+      const fetchResults = await Promise.all(
+        stagedItems.map(async (item) => {
+          try {
+            const accessToken = decryptToken(item.accessTokenEncrypted);
+            let transactions: any[] = [];
+            
+            // Use appropriate fetch method based on connection type
+            if (item.connectionType === "credit_card") {
+              const txResponse = await fetchCardTransactions(accessToken, item.trueLayerAccountId, from, to);
+              transactions = txResponse.results || [];
+            } else {
+              const txResponse = await fetchTransactions(accessToken, item.trueLayerAccountId, from, to);
+              transactions = txResponse.results || [];
+            }
+            
+            console.log(`[Initialize Analysis] Fetched ${transactions.length} transactions for ${item.institutionName} - ${item.accountName}`);
+            
+            // Store transactions
+            if (transactions.length > 0) {
+              const rawTransactionsToStore = transactions.map((tx: any) => {
+                const isIncoming = tx.amount > 0 || tx.transaction_type === "CREDIT";
+                return {
+                  userId: userId,
+                  trueLayerItemId: item.id,
+                  trueLayerTransactionId: String(tx.transaction_id),
+                  originalDescription: tx.description || "",
+                  amountCents: Math.round(Math.abs(tx.amount) * 100),
+                  currency: tx.currency || "GBP",
+                  entryType: isIncoming ? "incoming" : "outgoing",
+                  transactionDate: tx.timestamp?.split("T")[0] || new Date().toISOString().split("T")[0],
+                  ukCategory: tx.transaction_category || (isIncoming ? "income" : "uncategorized"),
+                  budgetGroup: isIncoming ? "income" : "discretionary",
+                  isRecurring: false,
+                  enrichmentStage: "pending",
+                  ntropyConfidence: null,
+                  enrichmentSource: null,
+                  labels: tx.transaction_classification || [],
+                };
+              });
+              
+              await storage.saveEnrichedTransactions(rawTransactionsToStore);
+            }
+            
+            // Update status to ACTIVE and set lastSyncedAt
+            await storage.updateTrueLayerItem(item.id, { 
+              processingStatus: ProcessingStatus.ACTIVE,
+              lastSyncedAt: new Date(),
+              connectionError: null,
+            });
+            
+            return { id: item.id, success: true, transactionCount: transactions.length };
+          } catch (error: any) {
+            console.error(`[Initialize Analysis] Failed to process account ${item.id}:`, error.message);
+            
+            // Update status to ERROR
+            await storage.updateTrueLayerItem(item.id, { 
+              processingStatus: ProcessingStatus.ERROR,
+              connectionError: error.message,
+            });
+            
+            return { id: item.id, success: false, error: error.message };
+          }
+        })
+      );
+      
+      // Step 4: Summary
+      const successful = fetchResults.filter(r => r.success);
+      const failed = fetchResults.filter(r => !r.success);
+      const totalTransactions = successful.reduce((sum, r) => sum + (r.transactionCount || 0), 0);
+      
+      console.log(`[Initialize Analysis] Batch complete: ${successful.length} accounts synced, ${failed.length} failed, ${totalTransactions} total transactions`);
+      
+      if (failed.length === stagedItems.length) {
+        return res.status(500).json({
+          message: "Failed to synchronize accounts. Please try reconnecting your banks.",
+          success: false,
+          details: failed,
+        });
+      }
+      
+      res.json({
+        message: "Ecosystem synchronized.",
+        success: true,
+        accountsProcessed: successful.length,
+        accountsFailed: failed.length,
+        totalTransactions,
+      });
+    } catch (error: any) {
+      console.error("[Initialize Analysis] Error during batch initialization:", error);
+      res.status(500).json({ 
+        message: "Failed to initialize analysis",
+        success: false,
+        error: error.message 
+      });
     }
   });
 

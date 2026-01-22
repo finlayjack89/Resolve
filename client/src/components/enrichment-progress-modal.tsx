@@ -4,7 +4,6 @@ import { Progress } from "@/components/ui/progress";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import { Button } from "@/components/ui/button";
 import { Info, Sparkles, AlertCircle, X, Loader2 } from "lucide-react";
-import { logoImage } from "./logo";
 
 interface EnrichmentProgress {
   current: number;
@@ -184,12 +183,12 @@ export function EnrichmentProgressModal({
       >
         <div className="flex flex-col items-center py-8 space-y-6">
           <div className="relative">
-            <img 
-              src={logoImage} 
-              alt="Resolve" 
-              className="h-16 w-16 object-contain animate-pulse"
+            <div 
+              className="h-16 w-16 flex items-center justify-center bg-primary/10 rounded-full animate-pulse"
               data-testid="img-resolve-logo-animated"
-            />
+            >
+              <span className="text-2xl font-bold text-primary">R</span>
+            </div>
             <div className="absolute -bottom-1 -right-1 bg-primary rounded-full p-1">
               <Sparkles className="h-4 w-4 text-primary-foreground" />
             </div>

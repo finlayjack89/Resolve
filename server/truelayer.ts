@@ -234,19 +234,19 @@ export async function fetchAccountBalance(
 
 /**
  * Calculate the dynamic date range for fetching transactions.
- * Returns the 1st of the 4th month ago to today, giving us 3 complete months + current MTD.
+ * Returns the 1st of the 7th month ago to today, giving us 6 complete months + current MTD.
  * 
  * Example for Dec 13th:
- * - Dynamic from: Sept 1st
+ * - Dynamic from: June 1st
  * - Dynamic to: Dec 13th
- * - Gives: 3 complete months (Sept, Oct, Nov) + partial December as "MTD"
+ * - Gives: 6 complete months (June, July, Aug, Sept, Oct, Nov) + partial December as "MTD"
  */
 export function calculateDynamicDateRange(): { from: string; to: string } {
   const now = new Date();
   
-  // Go back to 1st of 4th month ago (to get 3 complete months)
-  // Example: If today is Dec 13, we want Sept 1
-  const fromDate = new Date(now.getFullYear(), now.getMonth() - 3, 1);
+  // Go back to 1st of 7th month ago (to get 6 complete months)
+  // Example: If today is Dec 13, we want June 1
+  const fromDate = new Date(now.getFullYear(), now.getMonth() - 6, 1);
   
   return {
     from: fromDate.toISOString().split("T")[0],
