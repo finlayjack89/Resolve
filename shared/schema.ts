@@ -270,6 +270,8 @@ export const enrichedTransactions = pgTable("enriched_transactions", {
   transactionType: text("transaction_type").default("regular"), // 'regular', 'transfer', 'refund', 'reversal'
   linkedTransactionId: varchar("linked_transaction_id"), // Links refund to original expense, or transfer to counterpart
   excludeFromAnalysis: boolean("exclude_from_analysis").default(false), // True for transfers/reversals that shouldn't count
+  isInternalTransfer: boolean("is_internal_transfer").default(false), // True for detected internal transfers between connected accounts
+  ecosystemPairId: varchar("ecosystem_pair_id"), // UUID linking both sides of an internal transfer
   // Agentic Enrichment fields
   isSubscription: boolean("is_subscription").default(false),
   subscriptionId: varchar("subscription_id").references(() => subscriptionCatalog.id),
