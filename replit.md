@@ -18,6 +18,15 @@ Preferred communication style: Simple, everyday language.
 - **API Structure**: RESTful endpoints for authentication, accounts, budget, preferences, plans, and integrations (TrueLayer, lender rules, statement guidance).
 - **Authentication & Security**: Scrypt password hashing, express-session, AES-256-GCM encryption for TrueLayer tokens.
 - **TrueLayer Integration**: Handles OAuth2 flow, encrypted token storage, and transaction fetching for budget analysis.
+- **Staged Onboarding Flow (Phase 1)**: New batch initialization approach prevents "partial analysis" of user accounts:
+  - Added `processing_status` column to `trueLayerItems` table with values: STAGED, ANALYZING, ACTIVE, ERROR (defaults to STAGED)
+  - TrueLayer OAuth callback now only saves tokens/metadata and sets status to STAGED without fetching transactions
+  - Users can connect multiple bank accounts before triggering analysis
+  - POST `/api/finances/initialize-analysis` endpoint fetches transactions for ALL STAGED accounts in parallel and updates them to ACTIVE
+  - Transaction fetching uses 6-month window (from `calculateDynamicDateRange()`)
+  - Onboarding flow has 4 steps: Profile → Location → Connect Accounts → Generate Report
+  - The "Generate Resolve Report" button is disabled until at least one STAGED account exists
+  - GET `/api/truelayer/status` returns `processingStatus` per account and count summaries (stagedCount, analyzingCount, activeCount, errorCount)
 - **4-Layer Confidence-Gated Cascade**: Sequential enrichment pipeline with 0.80 confidence threshold that stops when confident:
   - **Layer 0 (Math Brain/Ghost Pair)**: Detects internal transfers (same amount, opposite directions, within 2 days). Sets confidence=1.0, enrichment_source="math_brain", excludes from analysis. STOPS cascade.
   - **Layer 1 (Ntropy)**: Merchant enrichment via Ntropy SDK v5.x with ambiguity penalties (Amazon/PayPal/Tesco/eBay = 0.5x, "General Merchandise" = 0.6x). If ntropy_confidence >= 0.80, sets enrichment_source="ntropy" and STOPS cascade.
