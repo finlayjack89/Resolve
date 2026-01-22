@@ -16,6 +16,7 @@ import { registerLenderProductRoutes } from "./routes/lender-products";
 import { registerBudgetAnalysisRoutes } from "./routes/budget-analysis";
 import { registerTrueLayerRoutes } from "./routes/truelayer";
 import { registerCurrentFinancesRoutes } from "./routes/current-finances";
+import { registerProjectionsRoutes } from "./routes/projections";
 
 // Helper function to retry fetch requests with exponential backoff
 async function fetchWithRetry(
@@ -110,6 +111,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   registerBudgetAnalysisRoutes(app);
   registerTrueLayerRoutes(app);
   registerCurrentFinancesRoutes(app);
+  registerProjectionsRoutes(app);
 
   // ==================== Auth Routes ====================
   app.post("/api/auth/signup", async (req, res, next) => {

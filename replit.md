@@ -57,6 +57,16 @@ Preferred communication style: Simple, everyday language.
   - `currentMonthPacing` nested object contains: currentMonthSpendCents, currentMonthIncomeCents, projectedMonthSpendCents, projectedMonthIncomeCents, daysPassed, totalDaysInMonth, monthStartDate, monthEndDate
   - Edge case: When no closed history exists (new user in first month), projections from activeMonth are used as estimates with `analysisMonths=0` to indicate projected data
   - Legacy `analysisMonths` field preserved for backwards compatibility
+- **Recurring Payment Projection Engine (Phase 4)**: Detects recurring bills and projects upcoming payments:
+  - `recurring_patterns` table stores detected patterns with: merchantName, frequency (WEEKLY/FORTNIGHTLY/MONTHLY/QUARTERLY/ANNUAL), avgAmountCents, anchorDay, nextDueDate, confidenceScore
+  - `detectRecurringPatterns()` function in server/services/frequency-detection.ts groups transactions by merchant, analyzes payment intervals, classifies frequency using median interval (±tolerance)
+  - Frequency detection tolerances: WEEKLY (5-9 days), FORTNIGHTLY (12-16 days), MONTHLY (27-34 days), QUARTERLY (85-100 days), ANNUAL (350-380 days)
+  - Minimum 2 occurrences required for pattern detection, 0.5 minimum confidence threshold
+  - `getUpcomingBillsForCurrentMonth()` compares detected patterns against current month transactions to identify PENDING, PAID, or OVERDUE bills
+  - Integrated into `/api/finances/initialize-analysis` endpoint (Step 5) - runs after ghost pair detection
+  - GET `/api/projections/upcoming` returns upcoming and paid bills for current month with summary totals
+  - GET `/api/projections/patterns` returns all detected recurring patterns for a user
+  - PATCH `/api/projections/patterns/:id/deactivate` allows users to mark patterns as inactive
 - **AI Research System**: Claude Sonnet 4.5 for automated lender rule discovery with human verification and intelligent caching.
 - **Python Backend Integration**: FastAPI runs as a child process of the Node.js server, utilizing Google OR-Tools CP-SAT solver. Includes health checks, retry logic, and auto-restart.
 

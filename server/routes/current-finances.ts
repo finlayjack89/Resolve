@@ -26,6 +26,7 @@ import {
 } from "../services/category-mapping";
 import { triggerAccountSync, isAccountSyncing, recalibrateAccountBudget } from "../services/background-sync";
 import { detectGhostPairs } from "../services/reconciliation";
+import { detectRecurringPatterns } from "../services/frequency-detection";
 import {
   fetchTransactions,
   fetchCardTransactions,
@@ -646,6 +647,21 @@ export function registerCurrentFinancesRoutes(app: Express): void {
         ghostPairsDetected = ghostPairs.length;
       }
       
+      // Step 5: Detect Recurring Patterns
+      let recurringPatternsDetected = 0;
+      try {
+        const freshTransactions = await storage.getEnrichedTransactionsByUserId(userId);
+        const patterns = detectRecurringPatterns(freshTransactions, userId);
+        
+        if (patterns.length > 0) {
+          console.log(`[Initialize Analysis] Detected ${patterns.length} recurring payment patterns`);
+          const savedPatterns = await storage.upsertRecurringPatterns(patterns);
+          recurringPatternsDetected = savedPatterns.length;
+        }
+      } catch (patternError: any) {
+        console.error(`[Initialize Analysis] Error detecting recurring patterns:`, patternError.message);
+      }
+      
       if (failed.length === stagedItems.length) {
         return res.status(500).json({
           message: "Failed to synchronize accounts. Please try reconnecting your banks.",
@@ -661,6 +677,7 @@ export function registerCurrentFinancesRoutes(app: Express): void {
         accountsFailed: failed.length,
         totalTransactions,
         ghostPairsDetected,
+        recurringPatternsDetected,
       });
     } catch (error: any) {
       console.error("[Initialize Analysis] Error during batch initialization:", error);

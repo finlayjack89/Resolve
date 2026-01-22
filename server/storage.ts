@@ -1,6 +1,6 @@
 import { 
   users, accounts, budgets, preferences, plans, lenderRules, trueLayerItems, debtBuckets, enrichedTransactions,
-  subscriptionCatalog, nylasGrants,
+  subscriptionCatalog, nylasGrants, recurringPatterns,
   type User, type InsertUser, 
   type Account, type InsertAccount,
   type Budget, type InsertBudget,
@@ -12,7 +12,8 @@ import {
   type AccountWithBuckets,
   type EnrichedTransaction, type InsertEnrichedTransaction,
   type SubscriptionCatalog, type InsertSubscriptionCatalog,
-  type NylasGrant, type InsertNylasGrant
+  type NylasGrant, type InsertNylasGrant,
+  type RecurringPattern, type InsertRecurringPattern
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, desc, gte, ilike } from "drizzle-orm";
@@ -104,6 +105,16 @@ export interface IStorage {
   createNylasGrant(grant: InsertNylasGrant): Promise<NylasGrant>;
   deleteNylasGrant(id: string): Promise<void>;
   deleteNylasGrantsByUserId(userId: string): Promise<void>;
+
+  // Recurring Patterns methods
+  getRecurringPatternsByUserId(userId: string): Promise<RecurringPattern[]>;
+  getRecurringPatternById(id: string): Promise<RecurringPattern | undefined>;
+  getActiveRecurringPatternsByUserId(userId: string): Promise<RecurringPattern[]>;
+  createRecurringPattern(pattern: InsertRecurringPattern): Promise<RecurringPattern>;
+  upsertRecurringPatterns(patterns: InsertRecurringPattern[]): Promise<RecurringPattern[]>;
+  updateRecurringPattern(id: string, updates: Partial<RecurringPattern>): Promise<RecurringPattern | undefined>;
+  deleteRecurringPattern(id: string): Promise<void>;
+  deleteRecurringPatternsByUserId(userId: string): Promise<void>;
 }
 
 type BucketInput = Omit<InsertDebtBucket, 'accountId'>;
@@ -626,6 +637,84 @@ export class DatabaseStorage implements IStorage {
   async deleteNylasGrantsByUserId(userId: string): Promise<void> {
     await db.delete(nylasGrants).where(eq(nylasGrants.userId, userId));
   }
+
+  // Recurring Patterns methods
+  async getRecurringPatternsByUserId(userId: string): Promise<RecurringPattern[]> {
+    return await db.select().from(recurringPatterns).where(eq(recurringPatterns.userId, userId));
+  }
+
+  async getRecurringPatternById(id: string): Promise<RecurringPattern | undefined> {
+    const [pattern] = await db.select().from(recurringPatterns).where(eq(recurringPatterns.id, id));
+    return pattern || undefined;
+  }
+
+  async getActiveRecurringPatternsByUserId(userId: string): Promise<RecurringPattern[]> {
+    return await db.select().from(recurringPatterns).where(
+      and(eq(recurringPatterns.userId, userId), eq(recurringPatterns.isActive, true))
+    );
+  }
+
+  async createRecurringPattern(pattern: InsertRecurringPattern): Promise<RecurringPattern> {
+    const [newPattern] = await db.insert(recurringPatterns).values(pattern).returning();
+    return newPattern;
+  }
+
+  async upsertRecurringPatterns(patterns: InsertRecurringPattern[]): Promise<RecurringPattern[]> {
+    if (patterns.length === 0) return [];
+
+    const results: RecurringPattern[] = [];
+
+    for (const pattern of patterns) {
+      const [existing] = await db.select().from(recurringPatterns).where(
+        and(
+          eq(recurringPatterns.userId, pattern.userId),
+          eq(recurringPatterns.merchantName, pattern.merchantName)
+        )
+      );
+
+      if (existing) {
+        const [updated] = await db.update(recurringPatterns)
+          .set({
+            frequency: pattern.frequency,
+            avgAmountCents: pattern.avgAmountCents,
+            minAmountCents: pattern.minAmountCents,
+            maxAmountCents: pattern.maxAmountCents,
+            anchorDay: pattern.anchorDay,
+            lastSeenDate: pattern.lastSeenDate,
+            nextDueDate: pattern.nextDueDate,
+            occurrenceCount: pattern.occurrenceCount,
+            confidenceScore: pattern.confidenceScore,
+            ukCategory: pattern.ukCategory,
+            isActive: pattern.isActive,
+            updatedAt: new Date(),
+          })
+          .where(eq(recurringPatterns.id, existing.id))
+          .returning();
+        results.push(updated);
+      } else {
+        const [created] = await db.insert(recurringPatterns).values(pattern).returning();
+        results.push(created);
+      }
+    }
+
+    return results;
+  }
+
+  async updateRecurringPattern(id: string, updates: Partial<RecurringPattern>): Promise<RecurringPattern | undefined> {
+    const [pattern] = await db.update(recurringPatterns)
+      .set({ ...updates, updatedAt: new Date() })
+      .where(eq(recurringPatterns.id, id))
+      .returning();
+    return pattern || undefined;
+  }
+
+  async deleteRecurringPattern(id: string): Promise<void> {
+    await db.delete(recurringPatterns).where(eq(recurringPatterns.id, id));
+  }
+
+  async deleteRecurringPatternsByUserId(userId: string): Promise<void> {
+    await db.delete(recurringPatterns).where(eq(recurringPatterns.userId, userId));
+  }
 }
 
 // Guest mode in-memory storage
@@ -1091,6 +1180,49 @@ class GuestStorageWrapper implements IStorage {
   async deleteNylasGrantsByUserId(userId: string): Promise<void> {
     if (this.isGuest(userId)) return;
     return this.dbStorage.deleteNylasGrantsByUserId(userId);
+  }
+
+  // Recurring Patterns methods - pass through to database (guest users can't use this)
+  async getRecurringPatternsByUserId(userId: string): Promise<RecurringPattern[]> {
+    if (this.isGuest(userId)) return [];
+    return this.dbStorage.getRecurringPatternsByUserId(userId);
+  }
+
+  async getRecurringPatternById(id: string): Promise<RecurringPattern | undefined> {
+    return this.dbStorage.getRecurringPatternById(id);
+  }
+
+  async getActiveRecurringPatternsByUserId(userId: string): Promise<RecurringPattern[]> {
+    if (this.isGuest(userId)) return [];
+    return this.dbStorage.getActiveRecurringPatternsByUserId(userId);
+  }
+
+  async createRecurringPattern(pattern: InsertRecurringPattern): Promise<RecurringPattern> {
+    if (this.isGuest(pattern.userId)) {
+      throw new Error("Guest users cannot create recurring patterns");
+    }
+    return this.dbStorage.createRecurringPattern(pattern);
+  }
+
+  async upsertRecurringPatterns(patterns: InsertRecurringPattern[]): Promise<RecurringPattern[]> {
+    if (patterns.length === 0) return [];
+    if (patterns.some(p => this.isGuest(p.userId))) {
+      throw new Error("Guest users cannot create recurring patterns");
+    }
+    return this.dbStorage.upsertRecurringPatterns(patterns);
+  }
+
+  async updateRecurringPattern(id: string, updates: Partial<RecurringPattern>): Promise<RecurringPattern | undefined> {
+    return this.dbStorage.updateRecurringPattern(id, updates);
+  }
+
+  async deleteRecurringPattern(id: string): Promise<void> {
+    return this.dbStorage.deleteRecurringPattern(id);
+  }
+
+  async deleteRecurringPatternsByUserId(userId: string): Promise<void> {
+    if (this.isGuest(userId)) return;
+    return this.dbStorage.deleteRecurringPatternsByUserId(userId);
   }
 }
 
