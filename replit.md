@@ -67,6 +67,13 @@ Preferred communication style: Simple, everyday language.
   - GET `/api/projections/upcoming` returns upcoming and paid bills for current month with summary totals
   - GET `/api/projections/patterns` returns all detected recurring patterns for a user
   - PATCH `/api/projections/patterns/:id/deactivate` allows users to mark patterns as inactive
+- **Two-Truths UI (Phase 5)**: Frontend distinguishes between "Bank Reality" and "Budget Reality":
+  - **Bank Reality (Ledger View)**: Shows raw bank totals INCLUDING internal transfers. Used in AccountLedger component and LedgerSummary on bank account detail pages.
+  - **Budget Reality (Dashboard)**: Shows analysis-adjusted totals EXCLUDING internal transfers. Dashboard displays Safe-to-Spend, Monthly Pacing, and Upcoming Bills cards.
+  - **AccountLedger Component** (client/src/components/AccountLedger.tsx): Reusable Accordion-based transaction list grouped by month. Internal transfers are visually dimmed (50% opacity) with Link2 icon and "Transfer" badge.
+  - **LedgerSummary Component**: Displays Total In/Out with transfer breakdowns, explicitly showing how much of each total includes transfers.
+  - **Dashboard Budget Cards**: Safe-to-Spend = availableForDebt minus upcoming bills total. Monthly Pacing shows current month spend vs historical average with progress bar. Upcoming Bills shows count and total from projections API.
+  - **Bank Account Detail Page**: Default "Ledger" tab uses AccountLedger component. LedgerSummary displayed above transaction tabs.
 - **AI Research System**: Claude Sonnet 4.5 for automated lender rule discovery with human verification and intelligent caching.
 - **Python Backend Integration**: FastAPI runs as a child process of the Node.js server, utilizing Google OR-Tools CP-SAT solver. Includes health checks, retry logic, and auto-restart.
 

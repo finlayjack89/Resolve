@@ -43,6 +43,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { formatDistanceToNow, format, isSameMonth, startOfMonth } from "date-fns";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
+import { AccountLedger, LedgerSummary, type LedgerTransaction } from "@/components/AccountLedger";
 
 interface CategoryBreakdown {
   category: string;
@@ -68,6 +69,8 @@ interface EnrichedTransactionDetail {
   transactionDate: string | null;
   isRecurring: boolean | null;
   recurrenceFrequency: string | null;
+  isInternalTransfer: boolean | null;
+  excludeFromAnalysis: boolean | null;
 }
 
 interface AccountAnalysisSummary {
@@ -513,6 +516,12 @@ export default function BankAccountDetail() {
           </Card>
         )}
 
+        {/* Ledger Summary - Bank Reality (includes transfers) */}
+        <LedgerSummary 
+          transactions={account.transactions as LedgerTransaction[]} 
+          currency={currency} 
+        />
+
         {/* Transaction Tabs */}
         <div className="space-y-4">
           {selectedCategory && (
@@ -534,13 +543,21 @@ export default function BankAccountDetail() {
               </Button>
             </div>
           )}
-          <Tabs defaultValue="all" className="w-full">
-            <TabsList className="grid w-full grid-cols-4">
+          <Tabs defaultValue="ledger" className="w-full">
+            <TabsList className="grid w-full grid-cols-5">
+              <TabsTrigger value="ledger" data-testid="tab-ledger">Ledger</TabsTrigger>
               <TabsTrigger value="all" data-testid="tab-all">All ({filteredTransactions.length})</TabsTrigger>
               <TabsTrigger value="income" data-testid="tab-income">Income ({incomeTransactions.length})</TabsTrigger>
               <TabsTrigger value="outgoing" data-testid="tab-outgoing">Outgoing ({outgoingTransactions.length})</TabsTrigger>
-              <TabsTrigger value="monthly" data-testid="tab-monthly">Monthly</TabsTrigger>
+              <TabsTrigger value="monthly" data-testid="tab-monthly">By Category</TabsTrigger>
             </TabsList>
+
+            <TabsContent value="ledger">
+              <AccountLedger 
+                transactions={account.transactions as LedgerTransaction[]} 
+                currency={currency} 
+              />
+            </TabsContent>
             
             <TabsContent value="all">
               <TransactionTable transactions={filteredTransactions} currency={currency} />

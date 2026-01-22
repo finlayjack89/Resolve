@@ -3,18 +3,87 @@ import { useAccounts, useActivePlan } from "@/hooks/use-plan-data";
 import { getCurrentMonthIndex, getDashboardStats } from "@/lib/date-utils";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { TrendingDown, Calendar, DollarSign, Target, CreditCard, BarChart3, CheckCircle2, RefreshCw } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { Progress } from "@/components/ui/progress";
+import { TrendingDown, Calendar, DollarSign, Target, CreditCard, BarChart3, CheckCircle2, RefreshCw, Wallet, Clock, AlertCircle, Receipt, ArrowRight } from "lucide-react";
 import { formatCurrency, formatMonthYear } from "@/lib/format";
 import { FindMyBudgetButton } from "@/components/find-my-budget-button";
 import { queryClient } from "@/lib/queryClient";
 import { useState } from "react";
 import { useAuth } from "@/lib/auth-context";
+import { useQuery } from "@tanstack/react-query";
+import type { UpcomingBill, RecurrenceFrequency } from "@shared/schema";
+
+interface CombinedFinancesResponse {
+  accounts: Array<{
+    id: string;
+    institutionName: string;
+    accountName: string;
+    transactionCount: number;
+    analysisSummary: {
+      averageMonthlyIncomeCents: number;
+      fixedCostsCents: number;
+      essentialsCents: number;
+      discretionaryCents: number;
+      availableForDebtCents: number;
+      closedMonthsAnalyzed: number;
+      currentMonthPacing?: {
+        currentMonthSpendCents: number;
+        currentMonthIncomeCents: number;
+        projectedMonthSpendCents: number;
+        projectedMonthIncomeCents: number;
+        daysPassed: number;
+        totalDaysInMonth: number;
+      };
+    } | null;
+  }>;
+  combined: {
+    totalIncomeCents: number;
+    employmentIncomeCents: number;
+    sideHustleIncomeCents: number;
+    otherIncomeCents: number;
+    fixedCostsCents: number;
+    essentialsCents: number;
+    discretionaryCents: number;
+    debtPaymentsCents: number;
+    availableForDebtCents: number;
+    closedMonthsAnalyzed: number;
+    currentMonthPacing?: {
+      currentMonthSpendCents: number;
+      currentMonthIncomeCents: number;
+      projectedMonthSpendCents: number;
+      projectedMonthIncomeCents: number;
+      daysPassed: number;
+      totalDaysInMonth: number;
+    };
+  };
+}
+
+interface UpcomingBillsResponse {
+  upcomingBills: UpcomingBill[];
+  paidBills: UpcomingBill[];
+  summary: {
+    totalUpcomingCount: number;
+    totalPaidCount: number;
+    totalUpcomingCents: number;
+    totalPaidCents: number;
+    monthEndDate: string;
+  };
+}
 
 export default function ActiveDashboard() {
   const { user } = useAuth();
   const { data: accounts = [], refetch: refetchAccounts } = useAccounts();
   const { data: plan, refetch: refetchPlan } = useActivePlan();
   const [isRefreshing, setIsRefreshing] = useState(false);
+
+  const { data: combinedFinances } = useQuery<CombinedFinancesResponse>({
+    queryKey: ["/api/current-finances/combined"],
+  });
+
+  const { data: upcomingBillsData } = useQuery<UpcomingBillsResponse>({
+    queryKey: ["/api/projections/upcoming"],
+  });
 
   const handleRefresh = async () => {
     setIsRefreshing(true);
@@ -23,6 +92,8 @@ export default function ActiveDashboard() {
         refetchAccounts(),
         refetchPlan(),
         queryClient.invalidateQueries({ queryKey: ["/api/budget"] }),
+        queryClient.invalidateQueries({ queryKey: ["/api/current-finances/combined"] }),
+        queryClient.invalidateQueries({ queryKey: ["/api/projections/upcoming"] }),
       ]);
     } finally {
       setIsRefreshing(false);
@@ -36,6 +107,21 @@ export default function ActiveDashboard() {
       </div>
     );
   }
+
+  const pacing = combinedFinances?.combined?.currentMonthPacing;
+  const historicalAvgSpend = combinedFinances?.combined 
+    ? combinedFinances.combined.fixedCostsCents + combinedFinances.combined.essentialsCents + combinedFinances.combined.discretionaryCents
+    : 0;
+  const availableForDebt = combinedFinances?.combined?.availableForDebtCents || 0;
+  const upcomingBillsTotal = upcomingBillsData?.summary?.totalUpcomingCents || 0;
+  const safeToSpend = Math.max(0, availableForDebt - upcomingBillsTotal);
+  
+  const pacingPercent = pacing && historicalAvgSpend > 0 
+    ? Math.round((pacing.currentMonthSpendCents / historicalAvgSpend) * 100)
+    : 0;
+  const expectedPacingPercent = pacing 
+    ? Math.round((pacing.daysPassed / pacing.totalDaysInMonth) * 100)
+    : 0;
 
   const currentMonthIndex = getCurrentMonthIndex(plan);
   const stats = getDashboardStats(plan, accounts, currentMonthIndex);
@@ -122,15 +208,145 @@ export default function ActiveDashboard() {
           </div>
         </div>
 
-        {/* Stats Grid */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {statCards.map((stat, index) => (
-            <Card key={index} data-testid={`card-stat-${index}`}>
-              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-sm font-medium">
-                  {stat.title}
-                </CardTitle>
-                <stat.icon className={`h-5 w-5 ${stat.iconColor}`} />
+        {/* Budget Reality Section */}
+        {combinedFinances?.combined && (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <h2 className="text-xl font-semibold">Your Budget Reality</h2>
+              <Button asChild variant="ghost" size="sm" data-testid="button-view-finances">
+                <Link href="/current-finances">
+                  View Details
+                  <ArrowRight className="h-4 w-4 ml-1" />
+                </Link>
+              </Button>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              {/* Safe-to-Spend Card */}
+              <Card data-testid="card-safe-to-spend">
+                <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0 pb-2">
+                  <CardTitle className="text-sm font-medium">Safe to Spend</CardTitle>
+                  <Wallet className="h-5 w-5 text-green-500" />
+                </CardHeader>
+                <CardContent>
+                  <div className="text-2xl font-bold font-mono text-green-600 dark:text-green-400" data-testid="text-safe-to-spend">
+                    {formatCurrency(safeToSpend, user?.currency)}
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    After upcoming bills ({formatCurrency(upcomingBillsTotal, user?.currency)})
+                  </p>
+                </CardContent>
+              </Card>
+
+              {/* Pacing Card */}
+              <Card data-testid="card-pacing">
+                <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0 pb-2">
+                  <CardTitle className="text-sm font-medium">Monthly Pacing</CardTitle>
+                  <Clock className="h-5 w-5 text-blue-500" />
+                </CardHeader>
+                <CardContent>
+                  <div className="flex items-baseline gap-2">
+                    <span className="text-2xl font-bold font-mono" data-testid="text-pacing-current">
+                      {formatCurrency(pacing?.currentMonthSpendCents || 0, user?.currency)}
+                    </span>
+                    <span className="text-sm text-muted-foreground">
+                      of {formatCurrency(historicalAvgSpend, user?.currency)} avg
+                    </span>
+                  </div>
+                  <div className="mt-2 space-y-1">
+                    <Progress 
+                      value={Math.min(pacingPercent, 100)} 
+                      className={`h-2 ${pacingPercent > expectedPacingPercent + 10 ? '[&>div]:bg-amber-500' : ''}`}
+                    />
+                    <div className="flex justify-between text-xs text-muted-foreground">
+                      <span>{pacingPercent}% spent</span>
+                      <span>{pacing ? `Day ${pacing.daysPassed} of ${pacing.totalDaysInMonth}` : ''}</span>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+
+              {/* Upcoming Bills Card */}
+              <Card data-testid="card-upcoming-bills-summary">
+                <CardHeader className="flex flex-row items-center justify-between gap-2 space-y-0 pb-2">
+                  <CardTitle className="text-sm font-medium">Upcoming Bills</CardTitle>
+                  <Receipt className="h-5 w-5 text-amber-500" />
+                </CardHeader>
+                <CardContent>
+                  <div className="text-2xl font-bold font-mono" data-testid="text-upcoming-bills-total">
+                    {formatCurrency(upcomingBillsTotal, user?.currency)}
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    {upcomingBillsData?.summary?.totalUpcomingCount || 0} bills due this month
+                  </p>
+                </CardContent>
+              </Card>
+            </div>
+          </div>
+        )}
+
+        {/* Upcoming Bills List */}
+        {upcomingBillsData && upcomingBillsData.upcomingBills.length > 0 && (
+          <Card data-testid="card-upcoming-bills-list">
+            <CardHeader>
+              <CardTitle>Upcoming Bills</CardTitle>
+              <CardDescription>Bills due before month end</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-3">
+                {upcomingBillsData.upcomingBills.slice(0, 5).map((bill) => (
+                  <div 
+                    key={bill.id} 
+                    className="flex items-center justify-between p-3 rounded-lg border"
+                    data-testid={`bill-item-${bill.id}`}
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className={`h-10 w-10 rounded-full flex items-center justify-center ${
+                        bill.status === 'OVERDUE' ? 'bg-red-100 dark:bg-red-900' : 'bg-muted'
+                      }`}>
+                        {bill.status === 'OVERDUE' ? (
+                          <AlertCircle className="h-5 w-5 text-red-500" />
+                        ) : (
+                          <Receipt className="h-5 w-5 text-muted-foreground" />
+                        )}
+                      </div>
+                      <div>
+                        <div className="font-medium">{bill.merchantName}</div>
+                        <div className="text-sm text-muted-foreground">
+                          Due {new Date(bill.dueDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      {bill.status === 'OVERDUE' && (
+                        <Badge variant="destructive">Overdue</Badge>
+                      )}
+                      <span className="font-mono font-semibold">
+                        {formatCurrency(bill.amountCents, user?.currency)}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+                {upcomingBillsData.upcomingBills.length > 5 && (
+                  <div className="text-center text-sm text-muted-foreground pt-2">
+                    +{upcomingBillsData.upcomingBills.length - 5} more bills
+                  </div>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Debt Plan Stats Grid */}
+        <div className="space-y-4">
+          <h2 className="text-xl font-semibold">Debt Payoff Progress</h2>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            {statCards.map((stat, index) => (
+              <Card key={index} data-testid={`card-stat-${index}`}>
+                <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                  <CardTitle className="text-sm font-medium">
+                    {stat.title}
+                  </CardTitle>
+                  <stat.icon className={`h-5 w-5 ${stat.iconColor}`} />
               </CardHeader>
               <CardContent>
                 <div className="text-2xl font-bold font-mono" data-testid={`text-stat-value-${index}`}>
@@ -142,6 +358,7 @@ export default function ActiveDashboard() {
               </CardContent>
             </Card>
           ))}
+          </div>
         </div>
 
         {/* Quick Actions */}
