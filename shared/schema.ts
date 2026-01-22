@@ -46,6 +46,15 @@ export enum MembershipFeeFrequency {
   ANNUAL = "annual"
 }
 
+// Recurring payment frequency detection
+export enum RecurrenceFrequency {
+  WEEKLY = "WEEKLY",           // ~7 days between payments
+  FORTNIGHTLY = "FORTNIGHTLY", // ~14 days between payments
+  MONTHLY = "MONTHLY",         // ~30 days between payments
+  QUARTERLY = "QUARTERLY",     // ~90 days between payments
+  ANNUAL = "ANNUAL"            // ~365 days between payments
+}
+
 // Current Finances - Per-account analysis summary (stored as JSONB)
 export interface AccountAnalysisSummary {
   // Historical averages (from CLOSED months only - excludes current incomplete month)
@@ -302,6 +311,28 @@ export const enrichedTransactions = pgTable("enriched_transactions", {
   userTransactionUnique: unique().on(table.userId, table.trueLayerTransactionId),
 }));
 
+// Recurring Patterns - Detected recurring payments from transaction history
+export const recurringPatterns = pgTable("recurring_patterns", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  merchantName: text("merchant_name").notNull(), // Normalized merchant name
+  frequency: text("frequency").notNull(), // WEEKLY, FORTNIGHTLY, MONTHLY, QUARTERLY, ANNUAL
+  avgAmountCents: integer("avg_amount_cents").notNull(), // Average payment amount
+  minAmountCents: integer("min_amount_cents"), // Minimum observed amount
+  maxAmountCents: integer("max_amount_cents"), // Maximum observed amount
+  anchorDay: integer("anchor_day").notNull(), // Day of month/week when payment typically occurs (1-31 for monthly, 1-7 for weekly)
+  lastSeenDate: date("last_seen_date").notNull(), // Most recent occurrence
+  nextDueDate: date("next_due_date"), // Predicted next payment date
+  occurrenceCount: integer("occurrence_count").default(1), // Number of times this pattern was observed
+  confidenceScore: real("confidence_score").default(0.0), // Pattern confidence (0-1)
+  ukCategory: text("uk_category"), // Category classification (utilities, subscriptions, etc.)
+  isActive: boolean("is_active").default(true), // Whether pattern is still active
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+}, (table) => ({
+  userMerchantUnique: unique().on(table.userId, table.merchantName),
+}));
+
 // TypeScript Types
 export type User = typeof users.$inferSelect;
 export type InsertUser = typeof users.$inferInsert;
@@ -338,6 +369,21 @@ export type InsertSubscriptionCatalog = typeof subscriptionCatalog.$inferInsert;
 
 export type NylasGrant = typeof nylasGrants.$inferSelect;
 export type InsertNylasGrant = typeof nylasGrants.$inferInsert;
+
+export type RecurringPattern = typeof recurringPatterns.$inferSelect;
+export type InsertRecurringPattern = typeof recurringPatterns.$inferInsert;
+
+// Upcoming Bill projection (derived from recurring patterns)
+export interface UpcomingBill {
+  id: string;
+  merchantName: string;
+  amountCents: number;
+  dueDate: string; // ISO date string
+  status: 'PENDING' | 'PAID' | 'OVERDUE';
+  frequency: RecurrenceFrequency;
+  ukCategory?: string;
+  confidenceScore: number;
+}
 
 // API Request/Response Types
 export interface MinPaymentRule {
