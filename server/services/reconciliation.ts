@@ -29,9 +29,19 @@ export function detectGhostPairs(
       new Date(b.transactionDate).getTime()
   );
 
-  // Get outgoing transactions
-  const outgoing = sorted.filter((tx) => tx.entryType === "outgoing");
-  const incoming = sorted.filter((tx) => tx.entryType === "incoming");
+  // Get outgoing transactions (exclude already matched)
+  const outgoing = sorted.filter((tx) => 
+    tx.entryType === "outgoing" && 
+    !tx.isInternalTransfer && 
+    !tx.ecosystemPairId &&
+    tx.transactionType !== "transfer"
+  );
+  const incoming = sorted.filter((tx) => 
+    tx.entryType === "incoming" && 
+    !tx.isInternalTransfer && 
+    !tx.ecosystemPairId &&
+    tx.transactionType !== "transfer"
+  );
 
   // For each outgoing transaction, find matching incoming transaction
   for (const outTx of outgoing) {

@@ -25,6 +25,7 @@ import {
   isDebtPaymentCategory,
 } from "../services/category-mapping";
 import { triggerAccountSync, isAccountSyncing, recalibrateAccountBudget } from "../services/background-sync";
+import { detectGhostPairs } from "../services/reconciliation";
 import {
   fetchTransactions,
   fetchCardTransactions,
@@ -618,6 +619,33 @@ export function registerCurrentFinancesRoutes(app: Express): void {
       
       console.log(`[Initialize Analysis] Batch complete: ${successful.length} accounts synced, ${failed.length} failed, ${totalTransactions} total transactions`);
       
+      // Step 4.5: Run Ghost Pair Detection
+      const allTransactions = await storage.getEnrichedTransactionsByUserId(userId);
+      const ghostPairs = detectGhostPairs(allTransactions);
+      
+      let ghostPairsDetected = 0;
+      if (ghostPairs.length > 0) {
+        console.log(`[Initialize Analysis] Detected ${ghostPairs.length} ghost pairs (internal transfers)`);
+        
+        for (const pair of ghostPairs) {
+          await storage.updateEnrichedTransaction(pair.outgoingTransactionId, {
+            isInternalTransfer: true,
+            excludeFromAnalysis: true,
+            ecosystemPairId: pair.ecosystemPairId,
+            transactionType: "transfer",
+            enrichmentSource: "math_brain",
+          });
+          await storage.updateEnrichedTransaction(pair.incomingTransactionId, {
+            isInternalTransfer: true,
+            excludeFromAnalysis: true,
+            ecosystemPairId: pair.ecosystemPairId,
+            transactionType: "transfer",
+            enrichmentSource: "math_brain",
+          });
+        }
+        ghostPairsDetected = ghostPairs.length;
+      }
+      
       if (failed.length === stagedItems.length) {
         return res.status(500).json({
           message: "Failed to synchronize accounts. Please try reconnecting your banks.",
@@ -632,6 +660,7 @@ export function registerCurrentFinancesRoutes(app: Express): void {
         accountsProcessed: successful.length,
         accountsFailed: failed.length,
         totalTransactions,
+        ghostPairsDetected,
       });
     } catch (error: any) {
       console.error("[Initialize Analysis] Error during batch initialization:", error);

@@ -542,6 +542,8 @@ export class DatabaseStorage implements IStorage {
     if (updates.excludeFromAnalysis !== undefined) updateObj.excludeFromAnalysis = updates.excludeFromAnalysis;
     if (updates.transactionType !== undefined) updateObj.transactionType = updates.transactionType;
     if (updates.linkedTransactionId !== undefined) updateObj.linkedTransactionId = updates.linkedTransactionId;
+    if (updates.isInternalTransfer !== undefined) updateObj.isInternalTransfer = updates.isInternalTransfer;
+    if (updates.ecosystemPairId !== undefined) updateObj.ecosystemPairId = updates.ecosystemPairId;
     if (updates.enrichmentStage !== undefined) updateObj.enrichmentStage = updates.enrichmentStage;
     if (updates.agenticConfidence !== undefined) updateObj.agenticConfidence = updates.agenticConfidence;
     if (Object.keys(updateObj).length > 0) {

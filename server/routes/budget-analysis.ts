@@ -327,13 +327,18 @@ export function registerBudgetAnalysisRoutes(app: Express): void {
               
               const originalTxMap = new Map(transactions.map((t: any) => [t.transaction_id, t]));
               
+              // Fetch user accounts to get connected lender names for transfer detection
+              const userAccounts = await storage.getAccountsByUserId(userId);
+              const connectedLenderNames = userAccounts.map(acc => acc.lenderName);
+              
               const transactionsToSave = enrichedTransactions.map((tx: any) => {
                 const originalTx = originalTxMap.get(tx.transaction_id);
                 const categoryMapping = mapNtropyLabelsToCategory(
                   tx.labels || [],
                   tx.merchant_clean_name,
                   originalTx?.description,
-                  tx.entry_type === "incoming"
+                  tx.entry_type === "incoming",
+                  connectedLenderNames
                 );
                 
                 return {
@@ -1090,6 +1095,10 @@ export function registerBudgetAnalysisRoutes(app: Express): void {
                         // Find the original transaction descriptions for UK category mapping
                         const originalTxMap = new Map(transactions.map((t: any) => [t.transaction_id, t]));
                         
+                        // Fetch user accounts to get connected lender names for transfer detection
+                        const userAccounts = await storage.getAccountsByUserId(userId);
+                        const connectedLenderNames = userAccounts.map(acc => acc.lenderName);
+                        
                         const transactionsToSave = event.result.enriched_transactions.map((tx: any) => {
                           const originalTx = originalTxMap.get(tx.transaction_id);
                           // Map Ntropy labels to UK budget categories
@@ -1097,7 +1106,8 @@ export function registerBudgetAnalysisRoutes(app: Express): void {
                             tx.labels || [],
                             tx.merchant_clean_name,
                             originalTx?.description,
-                            tx.entry_type === "incoming"
+                            tx.entry_type === "incoming",
+                            connectedLenderNames
                           );
                           
                           return {

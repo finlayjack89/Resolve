@@ -43,6 +43,7 @@ export enum UKBudgetCategory {
   // Debt & Savings
   DEBT_PAYMENT = "debt_payment",
   SAVINGS = "savings",
+  POTENTIAL_TRANSFER = "potential_transfer",
   
   // Other
   TRANSFER = "transfer",
@@ -299,6 +300,17 @@ const NTROPY_LABEL_MAPPINGS: Array<{ patterns: string[]; mapping: CategoryMappin
     },
   },
   
+  // Potential Transfer - payments to connected credit/loan providers (detected later with lender context)
+  {
+    patterns: [], // No automatic patterns - detected via lender matching
+    mapping: {
+      ukCategory: UKBudgetCategory.POTENTIAL_TRANSFER,
+      budgetGroup: "other",
+      displayName: "Potential Transfer",
+      icon: "ArrowLeftRight",
+    },
+  },
+  
   // Savings
   {
     patterns: ["savings", "investment", "isa", "stocks", "shares", "pension contribution", "sipp"],
@@ -384,14 +396,32 @@ const DEFAULT_INCOME_MAPPING: CategoryMapping = {
  * @param merchantName - Clean merchant name from Ntropy
  * @param description - Original transaction description
  * @param isIncoming - Whether this is an incoming (credit) transaction
+ * @param connectedLenderNames - List of connected lender names for transfer detection
  * @returns CategoryMapping with UK category and budget group
  */
 export function mapNtropyLabelsToCategory(
   labels: string[],
   merchantName?: string,
   description?: string,
-  isIncoming: boolean = false
+  isIncoming: boolean = false,
+  connectedLenderNames?: string[]
 ): CategoryMapping {
+  // Check if payment is to a connected lender (potential internal transfer)
+  if (connectedLenderNames && merchantName) {
+    const merchantLower = merchantName.toLowerCase();
+    for (const lenderName of connectedLenderNames) {
+      if (merchantLower.includes(lenderName.toLowerCase()) || 
+          lenderName.toLowerCase().includes(merchantLower)) {
+        return {
+          ukCategory: UKBudgetCategory.POTENTIAL_TRANSFER,
+          budgetGroup: "other",
+          displayName: "Potential Transfer",
+          icon: "ArrowLeftRight",
+        };
+      }
+    }
+  }
+
   // Combine all text sources for pattern matching
   const searchText = [
     ...labels.map(l => l.toLowerCase()),

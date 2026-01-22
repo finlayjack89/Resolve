@@ -276,6 +276,10 @@ export function getSyncingAccounts(): string[] {
 async function syncAccount(item: TrueLayerItem): Promise<void> {
   const accountId = item.id;
   
+  // Get connected lender names for POTENTIAL_TRANSFER detection
+  const userAccounts = await storage.getAccountsByUserId(item.userId);
+  const connectedLenderNames = userAccounts.map(acc => acc.lenderName);
+  
   if (!acquireSyncLock(accountId)) {
     console.log(`[Background Sync] Account ${accountId} already syncing, skipping`);
     return;
@@ -519,7 +523,8 @@ async function syncAccount(item: TrueLayerItem): Promise<void> {
             tx.transaction_classification || [],
             tx.merchant_name,
             tx.description,
-            isIncoming
+            isIncoming,
+            connectedLenderNames
           );
           
           return {
@@ -554,7 +559,8 @@ async function syncAccount(item: TrueLayerItem): Promise<void> {
           enriched.labels || [],
           enriched.merchant_clean_name,
           originalTx?.description,
-          enriched.entry_type === "incoming"
+          enriched.entry_type === "incoming",
+          connectedLenderNames
         );
 
         return {
