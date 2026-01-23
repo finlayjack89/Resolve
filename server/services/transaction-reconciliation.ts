@@ -49,6 +49,8 @@ interface ReconciliationResult {
   refundsDetected: number;
   bouncedPaymentsDetected: number;
   transactionsUpdated: number;
+  affectedAccountIds: Set<string>;
+  modifiedTransactionDates: Date[];
 }
 
 function daysBetween(date1: string, date2: string): number {
@@ -87,9 +89,13 @@ export async function reconcileTransactions(userId: string): Promise<Reconciliat
   
   const transactions = await storage.getEnrichedTransactionsByUserId(userId);
   
+  // Track affected accounts and dates for retroactive consistency
+  const affectedAccountIds = new Set<string>();
+  const modifiedTransactionDates: Date[] = [];
+  
   if (transactions.length === 0) {
     console.log(`[Reconciliation] No transactions to reconcile`);
-    return { transfersDetected: 0, refundsDetected: 0, bouncedPaymentsDetected: 0, transactionsUpdated: 0 };
+    return { transfersDetected: 0, refundsDetected: 0, bouncedPaymentsDetected: 0, transactionsUpdated: 0, affectedAccountIds, modifiedTransactionDates };
   }
   
   const unprocessed = transactions.filter(
@@ -129,6 +135,12 @@ export async function reconcileTransactions(userId: string): Promise<Reconciliat
           linkedTransactionId: inTx.id,
           excludeFromAnalysis: true,
         });
+        
+        // Track affected accounts and dates for retroactive consistency
+        if (inTx.trueLayerItemId) affectedAccountIds.add(inTx.trueLayerItemId);
+        if (outTx.trueLayerItemId) affectedAccountIds.add(outTx.trueLayerItemId);
+        modifiedTransactionDates.push(new Date(inTx.transactionDate));
+        modifiedTransactionDates.push(new Date(outTx.transactionDate));
         
         processedIds.add(inTx.id);
         processedIds.add(outTx.id);
@@ -170,12 +182,23 @@ export async function reconcileTransactions(userId: string): Promise<Reconciliat
         excludeFromAnalysis: true,
       });
       
+      // Track affected account and date for retroactive consistency
+      if (tx.trueLayerItemId) affectedAccountIds.add(tx.trueLayerItemId);
+      modifiedTransactionDates.push(new Date(tx.transactionDate));
+      
       if (linkedOriginalId) {
+        const linkedTx = outgoing.find(o => o.id === linkedOriginalId);
         await storage.updateEnrichedTransactionReconciliation(linkedOriginalId, {
           excludeFromAnalysis: true,
         });
         processedIds.add(linkedOriginalId);
         transactionsUpdated++;
+        
+        // Track linked transaction's account and date
+        if (linkedTx) {
+          if (linkedTx.trueLayerItemId) affectedAccountIds.add(linkedTx.trueLayerItemId);
+          modifiedTransactionDates.push(new Date(linkedTx.transactionDate));
+        }
       }
       
       processedIds.add(tx.id);
@@ -214,6 +237,8 @@ export async function reconcileTransactions(userId: string): Promise<Reconciliat
     
     // Only mark as marketplace refund if we found a matching original purchase
     if (linkedOriginalId) {
+      const linkedTx = outgoing.find(o => o.id === linkedOriginalId);
+      
       await storage.updateEnrichedTransactionReconciliation(inTx.id, {
         transactionType: "refund",
         linkedTransactionId: linkedOriginalId,
@@ -223,6 +248,14 @@ export async function reconcileTransactions(userId: string): Promise<Reconciliat
       await storage.updateEnrichedTransactionReconciliation(linkedOriginalId, {
         excludeFromAnalysis: true,
       });
+      
+      // Track affected accounts and dates for retroactive consistency
+      if (inTx.trueLayerItemId) affectedAccountIds.add(inTx.trueLayerItemId);
+      modifiedTransactionDates.push(new Date(inTx.transactionDate));
+      if (linkedTx) {
+        if (linkedTx.trueLayerItemId) affectedAccountIds.add(linkedTx.trueLayerItemId);
+        modifiedTransactionDates.push(new Date(linkedTx.transactionDate));
+      }
       
       processedIds.add(inTx.id);
       processedIds.add(linkedOriginalId);
@@ -263,8 +296,13 @@ export async function reconcileTransactions(userId: string): Promise<Reconciliat
         excludeFromAnalysis: true,
       });
       
+      // Track affected account and date for retroactive consistency
+      if (inTx.trueLayerItemId) affectedAccountIds.add(inTx.trueLayerItemId);
+      modifiedTransactionDates.push(new Date(inTx.transactionDate));
+      
       // Mark the original payment that bounced as excluded too
       if (linkedOriginalId) {
+        const linkedTx = outgoing.find(o => o.id === linkedOriginalId);
         await storage.updateEnrichedTransactionReconciliation(linkedOriginalId, {
           transactionType: "bounced_payment",
           linkedTransactionId: inTx.id,
@@ -272,6 +310,12 @@ export async function reconcileTransactions(userId: string): Promise<Reconciliat
         });
         processedIds.add(linkedOriginalId);
         transactionsUpdated++;
+        
+        // Track linked transaction's account and date
+        if (linkedTx) {
+          if (linkedTx.trueLayerItemId) affectedAccountIds.add(linkedTx.trueLayerItemId);
+          modifiedTransactionDates.push(new Date(linkedTx.transactionDate));
+        }
       }
       
       processedIds.add(inTx.id);
@@ -282,7 +326,7 @@ export async function reconcileTransactions(userId: string): Promise<Reconciliat
     }
   }
   
-  console.log(`[Reconciliation] Completed: ${transfersDetected} transfers, ${refundsDetected} refunds, ${bouncedPaymentsDetected} bounced payments, ${transactionsUpdated} transactions updated`);
+  console.log(`[Reconciliation] Completed: ${transfersDetected} transfers, ${refundsDetected} refunds, ${bouncedPaymentsDetected} bounced payments, ${transactionsUpdated} transactions updated, ${affectedAccountIds.size} accounts affected`);
   
-  return { transfersDetected, refundsDetected, bouncedPaymentsDetected, transactionsUpdated };
+  return { transfersDetected, refundsDetected, bouncedPaymentsDetected, transactionsUpdated, affectedAccountIds, modifiedTransactionDates };
 }

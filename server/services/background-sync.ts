@@ -18,6 +18,8 @@ import {
 import { encryptToken, decryptToken } from "../encryption";
 import type { TrueLayerItem, InsertEnrichedTransaction, AccountAnalysisSummary, EnrichedTransaction } from "@shared/schema";
 import { mapNtropyLabelsToCategory } from "./category-mapping";
+import { reconcileTransactions } from "./transaction-reconciliation";
+import { startOfMonth, isBefore } from "date-fns";
 
 const SYNC_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
 const STALE_THRESHOLD_MS = 30 * 60 * 1000; // 30 minutes
@@ -738,12 +740,34 @@ async function syncAccount(item: TrueLayerItem): Promise<void> {
       // Update lastEnrichedAt
       await storage.updateTrueLayerItem(accountId, { lastEnrichedAt: new Date() });
       
-      // IMPORTANT: Always recalibrate after adding new transactions
-      // This ensures analysisSummary reflects the newly enriched data
-      console.log(`[Background Sync] Triggering immediate budget recalibration after new transactions`);
-      const freshItem = await storage.getTrueLayerItemById(accountId);
-      if (freshItem) {
-        await recalibrateAccountBudget(freshItem);
+      // Run reconciliation to detect transfers, refunds, and bounced payments
+      // This returns affected accounts and modified dates for retroactive consistency
+      const reconciliationResult = await reconcileTransactions(item.userId);
+      const { affectedAccountIds, modifiedTransactionDates } = reconciliationResult;
+      
+      // DIRTY HISTORY CHECK: Check if any modified transactions are from closed periods
+      const currentMonthStart = startOfMonth(new Date());
+      const historyWasModified = modifiedTransactionDates.some(date => 
+        isBefore(date, currentMonthStart)
+      );
+      
+      if (historyWasModified) {
+        console.log(`[Background Sync] Retroactive change detected. Forcing recalculation for affected accounts.`);
+      }
+      
+      // Recalibrate ALL affected accounts (not just the current one)
+      // This ensures that if a sync on Barclays detects a transfer to Amex, Amex is also recalibrated
+      const accountsToRecalibrate = new Set<string>(Array.from(affectedAccountIds));
+      accountsToRecalibrate.add(accountId); // Always include current account
+      
+      const accountsArray = Array.from(accountsToRecalibrate);
+      console.log(`[Background Sync] Triggering budget recalibration for ${accountsArray.length} affected account(s)`);
+      
+      for (const affectedId of accountsArray) {
+        const affectedItem = await storage.getTrueLayerItemById(affectedId);
+        if (affectedItem) {
+          await recalibrateAccountBudget(affectedItem);
+        }
       }
     } else {
       // No new transactions, but still check if scheduled recalibration is needed
