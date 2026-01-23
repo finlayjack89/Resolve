@@ -1,0 +1,141 @@
+Fix the Staged Onboarding and Holistic Analysis implementation. Currently, the application fails to populate account summaries after initialization, and the combined budget incorrectly sums up averages instead of analyzing the unified stream.
+
+Please perform the following 3 specific tasks to fix the architecture:
+
+Task 1: Fix the initialize-analysis Endpoint (Backend)
+File: server/routes/current-finances.ts
+
+The /api/finances/initialize-analysis endpoint fetches transactions and detects patterns but fails to calculate the initial budget summary for the accounts. This leaves the dashboard tiles empty.
+
+Action: Modify the initialize-analysis endpoint logic (at the end of the function, before sending the response) to:
+
+Iterate through all the successful items processed in the batch.
+
+Call recalibrateAccountBudget(item) for each one.
+
+Update the item's status to ACTIVE only after recalibration is complete.
+
+Task 2: Implement Holistic Budget Calculation (Backend)
+File: server/routes/current-finances.ts
+
+The GET /api/current-finances/combined endpoint currently uses aggregateAnalysisSummaries, which naively sums up averages from each account. This is mathematically incorrect and ignores the "Ghost Pair" exclusions we implemented.
+
+Action: Completely rewrite the GET /api/current-finances/combined handler to:
+
+Fetch ALL enriched transactions for the user from the database (storage.getEnrichedTransactionsByUserId).
+
+Filter out any transaction where excludeFromAnalysis === true (this removes the Ghost Pairs/Transfers).
+
+Map these transactions to the format expected by analyzeBudget.
+
+Run analyzeBudget on this unified stream of transactions.
+
+Map the result of analyzeBudget to the combined response object.
+
+Delete the unused aggregateAnalysisSummaries function.
+
+Task 3: Visual Polish for Staged Accounts (Frontend)
+File: client/src/components/connected-account-tile.tsx (or verify usage in onboarding.tsx)
+
+Ensure the user understands that an account is "Connected but Pending Analysis."
+
+Action: Update the account list UI (in client/src/pages/onboarding.tsx or the relevant tile component) to:
+
+Check the processingStatus of the account.
+
+If processingStatus === 'STAGED', display a badge or text saying "Ready to Analyze" in amber/yellow.
+
+If processingStatus === 'ACTIVE', display "Analyzed" in green.
+
+Implementation Guide for server/routes/current-finances.ts Below is the correct code structure for the fixed endpoints. Please apply this logic.
+
+TypeScript
+
+// ... imports ...
+// Ensure convertToBudgetEngineFormat helper is defined or imported
+
+app.get("/api/current-finances/combined", requireAuth, async (req, res) => {
+  try {
+    const userId = (req.user as any).id;
+    const items = await storage.getTrueLayerItemsByUserId(userId);
+    const user = await storage.getUser(userId);
+
+    // 1. Get Accounts Summary (Bank Truth)
+    const accounts = await Promise.all(
+      items.map(async (item) => {
+        const transactionCount = await storage.getEnrichedTransactionsCountByItemId(item.id);
+        return buildAccountSummary(item, transactionCount);
+      })
+    );
+
+    // 2. HOLISTIC CALCULATION (Budget Truth)
+    // Fetch ALL transactions for the user
+    const allTransactions = await storage.getEnrichedTransactionsByUserId(userId);
+    
+    // Filter out "Ghost Pairs" and excluded items
+    const budgetTransactions = allTransactions
+      .filter(tx => !tx.excludeFromAnalysis)
+      .map(tx => ({
+        description: tx.originalDescription,
+        amount: tx.amountCents / 100, // Convert cents to float for engine
+        transaction_classification: tx.labels || [],
+        transaction_type: tx.entryType === 'incoming' ? "CREDIT" : "DEBIT",
+        date: tx.transactionDate,
+      }));
+
+    // Run the Math Brain on the unified stream
+    // We cast to any here because the engine expects TrueLayerTransaction type but we are passing a shape that matches it
+    const globalAnalysis = analyzeBudget({
+      transactions: budgetTransactions as any, 
+      analysisMonths: 6 
+    });
+
+    // 3. Map the Global Analysis to the Response
+    const combined = {
+      totalIncomeCents: globalAnalysis.averageMonthlyIncomeCents,
+      employmentIncomeCents: 0, // derived in engine breakdown if needed
+      sideHustleIncomeCents: 0, 
+      otherIncomeCents: 0,      
+      fixedCostsCents: globalAnalysis.fixedCostsCents,
+      essentialsCents: globalAnalysis.variableEssentialsCents,
+      discretionaryCents: globalAnalysis.discretionaryCents,
+      debtPaymentsCents: 0, // Calculated separately via debt detection if needed
+      availableForDebtCents: globalAnalysis.safeToSpendCents,
+      analysisMonths: globalAnalysis.closedMonthsAnalyzed || globalAnalysis.analysisMonths,
+    };
+
+    const suggestedBudgetCents = Math.round(combined.discretionaryCents * 0.5);
+
+    res.json({
+      accounts,
+      combined,
+      budgetForDebt: {
+        currentBudgetCents: user?.currentBudgetCents || null,
+        potentialBudgetCents: user?.potentialBudgetCents || null,
+        suggestedBudgetCents,
+      },
+    });
+  } catch (error: any) {
+    console.error("[Current Finances] Error fetching combined view:", error);
+    res.status(500).json({ message: "Failed to fetch combined finances" });
+  }
+});
+
+// In POST /initialize-analysis
+// ... after Pattern Detection ...
+
+// Step 6: Recalibrate Individual Accounts (The Missing Piece)
+const successfulItems = fetchResults.filter(r => r.success).map(r => stagedItems.find(i => i.id === r.id)!);
+
+await Promise.all(successfulItems.map(async (item) => {
+  console.log(`[Initialize Analysis] Recalibrating budget for ${item.institutionName}`);
+  await recalibrateAccountBudget(item);
+  
+  // Mark as ACTIVE now that it has data
+  await storage.updateTrueLayerItem(item.id, { 
+    processingStatus: ProcessingStatus.ACTIVE,
+    lastSyncedAt: new Date()
+  });
+}));
+
+// ... send response ...
