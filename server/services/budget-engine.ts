@@ -6,6 +6,7 @@ import type {
   DetectedDebtPayment,
   BreakdownItem,
 } from "@shared/schema";
+import { startOfMonth, isBefore, differenceInCalendarMonths, getDaysInMonth, differenceInDays } from "date-fns";
 
 // Debt-related keywords for detection
 const DEBT_KEYWORDS = [
@@ -183,9 +184,52 @@ function extractCategory(classification: string[]): string | undefined {
 }
 
 export function analyzeBudget(input: BudgetEngineInput): BudgetAnalysisResponse {
-  const { transactions, direct_debits = [], analysisMonths = 1 } = input;
+  const { transactions, direct_debits = [] } = input;
 
-  // Categorize all transactions - using BreakdownItem with amount in dollars (not cents)
+  // Define current month start for closed period calculation
+  const now = new Date();
+  const currentMonthStart = startOfMonth(now);
+  
+  // Define 6-month lookback cutoff (start of 6 months ago)
+  const sixMonthsCutoff = new Date(currentMonthStart);
+  sixMonthsCutoff.setMonth(sixMonthsCutoff.getMonth() - 6);
+
+  // Split transactions into three categories:
+  // - activeMonth: current partial month (for pacing only)
+  // - closedHistory: past 6 months only (for averages)
+  // - older transactions are excluded from average calculations
+  const closedHistory: TrueLayerTransaction[] = [];
+  const activeMonth: TrueLayerTransaction[] = [];
+
+  for (const tx of transactions) {
+    const txDate = tx.date ? new Date(tx.date) : new Date();
+    if (!isBefore(txDate, currentMonthStart)) {
+      // Current month - for pacing
+      activeMonth.push(tx);
+    } else if (!isBefore(txDate, sixMonthsCutoff)) {
+      // Within last 6 months - for averages
+      closedHistory.push(tx);
+    }
+    // Transactions older than 6 months are excluded from averages
+  }
+
+  // Find oldest transaction date within the 6-month window for calculating actual months covered
+  let oldestTransactionDate: Date | null = null;
+  if (closedHistory.length > 0) {
+    oldestTransactionDate = closedHistory.reduce((oldest, tx) => {
+      const txDate = tx.date ? new Date(tx.date) : new Date();
+      return txDate < oldest ? txDate : oldest;
+    }, new Date(closedHistory[0].date || new Date()));
+  }
+
+  // Calculate closedMonthsAnalyzed from the actual data span (max 6)
+  let closedMonthsAnalyzed = 0;
+  if (oldestTransactionDate) {
+    const monthsFound = differenceInCalendarMonths(currentMonthStart, oldestTransactionDate);
+    closedMonthsAnalyzed = Math.max(1, Math.min(monthsFound, 6));
+  }
+
+  // Categorize CLOSED HISTORY transactions only for averages
   const incomeItems: BreakdownItem[] = [];
   const fixedCostsItems: BreakdownItem[] = [];
   const variableEssentialsItems: BreakdownItem[] = [];
@@ -196,10 +240,10 @@ export function analyzeBudget(input: BudgetEngineInput): BudgetAnalysisResponse 
   let totalVariableCents = 0;
   let totalDiscretionaryCents = 0;
 
-  for (const tx of transactions) {
+  for (const tx of closedHistory) {
     const budgetCategory = categorizeTransaction(tx);
     const amountCents = Math.round(Math.abs(tx.amount) * 100);
-    const amount = Math.abs(tx.amount); // Amount in dollars for frontend
+    const amount = Math.abs(tx.amount);
     const category = extractCategory(tx.transaction_classification);
     const txRecord: BreakdownItem = { description: tx.description, amount, category };
 
@@ -217,7 +261,6 @@ export function analyzeBudget(input: BudgetEngineInput): BudgetAnalysisResponse 
         totalVariableCents += amountCents;
         break;
       case "discretionary":
-        // Only count debits as discretionary spending
         if (tx.amount < 0) {
           discretionaryItems.push(txRecord);
           totalDiscretionaryCents += amountCents;
@@ -226,11 +269,33 @@ export function analyzeBudget(input: BudgetEngineInput): BudgetAnalysisResponse 
     }
   }
 
+  // Calculate ACTIVE MONTH metrics for pacing
+  let currentMonthSpendCents = 0;
+  let currentMonthIncomeCents = 0;
+
+  for (const tx of activeMonth) {
+    const amountCents = Math.round(Math.abs(tx.amount) * 100);
+    if (tx.amount > 0 && !isInternalTransfer(tx)) {
+      currentMonthIncomeCents += amountCents;
+    } else if (tx.amount < 0) {
+      currentMonthSpendCents += amountCents;
+    }
+  }
+
+  // Calculate pacing projection
+  const daysPassed = differenceInDays(now, currentMonthStart) + 1;
+  const totalDaysInMonth = getDaysInMonth(now);
+  const projectedMonthSpendCents = totalDaysInMonth > 0 && daysPassed > 0
+    ? Math.round((currentMonthSpendCents / daysPassed) * totalDaysInMonth)
+    : 0;
+  const projectedMonthIncomeCents = totalDaysInMonth > 0 && daysPassed > 0
+    ? Math.round((currentMonthIncomeCents / daysPassed) * totalDaysInMonth)
+    : 0;
+
   // Add direct debits to fixed costs (they represent committed monthly payments)
   for (const dd of direct_debits) {
     if (dd.amount > 0) {
       const amountCents = Math.round(dd.amount * 100);
-      // Only add if not already counted in transactions
       const alreadyCounted = fixedCostsItems.some(
         (t) => t.description.toUpperCase().includes(dd.name.toUpperCase())
       );
@@ -241,11 +306,25 @@ export function analyzeBudget(input: BudgetEngineInput): BudgetAnalysisResponse 
     }
   }
 
-  // Calculate monthly averages
-  const averageMonthlyIncomeCents = Math.round(totalIncomeCents / analysisMonths);
-  const fixedCostsCents = Math.round(totalFixedCents / analysisMonths);
-  const variableEssentialsCents = Math.round(totalVariableCents / analysisMonths);
-  const discretionaryCents = Math.round(totalDiscretionaryCents / analysisMonths);
+  // Calculate monthly averages from CLOSED HISTORY only
+  // Use closedMonthsAnalyzed as divisor (or 1 to prevent division by zero)
+  const divisor = closedMonthsAnalyzed > 0 ? closedMonthsAnalyzed : 1;
+  
+  // If no closed history, use active month projections as fallback estimates
+  const hasClosedHistory = closedHistory.length > 0 && closedMonthsAnalyzed > 0;
+  
+  const averageMonthlyIncomeCents = hasClosedHistory 
+    ? Math.round(totalIncomeCents / divisor)
+    : projectedMonthIncomeCents;
+  const fixedCostsCents = hasClosedHistory
+    ? Math.round(totalFixedCents / divisor)
+    : 0;
+  const variableEssentialsCents = hasClosedHistory
+    ? Math.round(totalVariableCents / divisor)
+    : 0;
+  const discretionaryCents = hasClosedHistory
+    ? Math.round(totalDiscretionaryCents / divisor)
+    : projectedMonthSpendCents;
 
   // Safe-to-Spend = Income - Fixed - Variable Essentials
   const safeToSpendCents = Math.max(
@@ -253,8 +332,20 @@ export function analyzeBudget(input: BudgetEngineInput): BudgetAnalysisResponse 
     averageMonthlyIncomeCents - fixedCostsCents - variableEssentialsCents
   );
 
-  // Detect debt payments from transaction descriptions
+  // Detect debt payments from ALL transactions (including current month)
   const detectedDebtPayments = detectDebtPayments(transactions);
+
+  // Build current month pacing object
+  const currentMonthPacing = {
+    currentMonthSpendCents,
+    currentMonthIncomeCents,
+    projectedMonthSpendCents,
+    projectedMonthIncomeCents,
+    daysPassed,
+    totalDaysInMonth,
+    monthStartDate: currentMonthStart.toISOString(),
+    monthEndDate: new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString(),
+  };
 
   return {
     averageMonthlyIncomeCents,
@@ -269,7 +360,9 @@ export function analyzeBudget(input: BudgetEngineInput): BudgetAnalysisResponse 
       variableEssentials: variableEssentialsItems,
       discretionary: discretionaryItems,
     },
-    analysisMonths,
+    analysisMonths: closedMonthsAnalyzed,
+    closedMonthsAnalyzed,
+    currentMonthPacing,
   };
 }
 

@@ -670,6 +670,18 @@ export interface TransactionBreakdownItem {
   category?: string;
 }
 
+// Current Month Pacing - for tracking spend/income in the active month
+export interface CurrentMonthPacing {
+  currentMonthSpendCents: number;
+  currentMonthIncomeCents: number;
+  projectedMonthSpendCents: number;
+  projectedMonthIncomeCents: number;
+  daysPassed: number;
+  totalDaysInMonth: number;
+  monthStartDate: string;
+  monthEndDate: string;
+}
+
 // Budget Analysis Response - Output from Budget Engine
 export interface BudgetAnalysisResponse {
   averageMonthlyIncomeCents: number;
@@ -684,7 +696,9 @@ export interface BudgetAnalysisResponse {
     variableEssentials: BreakdownItem[];
     discretionary: BreakdownItem[];
   };
-  analysisMonths: number;
+  analysisMonths: number; // Legacy field for backwards compatibility
+  closedMonthsAnalyzed?: number; // Number of complete past months used (0 = only active month data)
+  currentMonthPacing?: CurrentMonthPacing; // Current month spend/income pacing metrics
 }
 
 // Zod schema for budget analysis request
