@@ -674,6 +674,78 @@ export function registerCurrentFinancesRoutes(app: Express): void {
   });
 
   /**
+   * GET /api/finances/analysis-insights
+   * Returns recent analysis insights including detected merchants, ghost pairs, and patterns.
+   * Used by the frontend to show real-time progress during analysis.
+   */
+  app.get("/api/finances/analysis-insights", requireAuth, async (req, res) => {
+    try {
+      const userId = (req.user as any).id;
+      
+      // Get all user's transactions
+      const transactions = await storage.getEnrichedTransactionsByUserId(userId);
+      
+      // Get unique merchants with logos (most recent first)
+      const merchantsWithLogos = transactions
+        .filter(tx => tx.merchantCleanName && tx.merchantLogoUrl)
+        .reduce((acc, tx) => {
+          if (!acc.find(m => m.name === tx.merchantCleanName)) {
+            acc.push({
+              name: tx.merchantCleanName!,
+              logoUrl: tx.merchantLogoUrl!,
+              category: tx.ukCategory || 'uncategorized',
+            });
+          }
+          return acc;
+        }, [] as { name: string; logoUrl: string; category: string }[])
+        .slice(0, 20);
+      
+      // Get ghost pairs (internal transfers)
+      const ghostPairs = transactions.filter(tx => tx.isInternalTransfer === true);
+      const uniqueGhostPairIds = new Set(ghostPairs.map(tx => tx.ecosystemPairId).filter(Boolean));
+      
+      // Get recent detection events (transactions marked as ghost pairs)
+      const recentDetections = ghostPairs
+        .slice(0, 10)
+        .map(tx => ({
+          type: 'transfer',
+          date: tx.transactionDate,
+          description: tx.merchantCleanName || tx.originalDescription,
+          amount: tx.amountCents,
+        }));
+      
+      // Get recurring patterns
+      const patterns = await storage.getRecurringPatternsByUserId(userId);
+      const activePatterns = patterns.filter(p => p.isActive);
+      
+      // Summary stats
+      const totalTransactions = transactions.length;
+      const analyzedTransactions = transactions.filter(tx => tx.enrichmentSource).length;
+      const excludedTransactions = transactions.filter(tx => tx.excludeFromAnalysis).length;
+      
+      res.json({
+        merchants: merchantsWithLogos,
+        ghostPairsCount: uniqueGhostPairIds.size,
+        recurringPatternsCount: activePatterns.length,
+        recentDetections,
+        stats: {
+          totalTransactions,
+          analyzedTransactions,
+          excludedTransactions,
+        },
+        patterns: activePatterns.slice(0, 10).map(p => ({
+          merchantName: p.merchantName,
+          frequency: p.frequency,
+          avgAmount: p.avgAmountCents,
+        })),
+      });
+    } catch (error: any) {
+      console.error("[Analysis Insights] Error:", error);
+      res.status(500).json({ message: "Failed to get analysis insights" });
+    }
+  });
+
+  /**
    * POST /api/current-finances/account/:id/re-enrich
    * Re-processes existing transactions through the full enrichment cascade (Layers 0-4)
    * without requiring a TrueLayer connection. This is useful for:

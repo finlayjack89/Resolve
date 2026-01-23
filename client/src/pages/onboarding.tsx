@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { useLocation } from "wouter";
+import { useLocation, useSearch } from "wouter";
 import { useAuth } from "@/lib/auth-context";
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
@@ -11,7 +11,8 @@ import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, Command
 import { ProgressStepper } from "@/components/progress-stepper";
 import { Logo } from "@/components/logo";
 import { ThemeToggle } from "@/components/theme-toggle";
-import { ArrowRight, ArrowLeft, Check, ChevronsUpDown, Loader2, FileText, Building2 } from "lucide-react";
+import { StagedOnboardingWizard } from "@/components/staged-onboarding-wizard";
+import { ArrowRight, ArrowLeft, Check, ChevronsUpDown, Loader2, Landmark, CreditCard, Zap } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { countries } from "@/lib/countries";
 import { cn } from "@/lib/utils";
@@ -25,6 +26,7 @@ const steps = [
 
 export default function Onboarding() {
   const [, setLocation] = useLocation();
+  const searchString = useSearch();
   const { user, updateUser } = useAuth();
   const { toast } = useToast();
   const [currentStep, setCurrentStep] = useState(1);
@@ -36,8 +38,18 @@ export default function Onboarding() {
   const [countryOpen, setCountryOpen] = useState(false);
   const [regionOpen, setRegionOpen] = useState(false);
   const [isDetectingLocation, setIsDetectingLocation] = useState(false);
-  const [isGeneratingReport, setIsGeneratingReport] = useState(false);
-  const [isConnecting, setIsConnecting] = useState(false);
+  const [wizardOpen, setWizardOpen] = useState(false);
+  
+  // Check for wizard=open query param (set after TrueLayer callback)
+  useEffect(() => {
+    const params = new URLSearchParams(searchString);
+    if (params.get("wizard") === "open") {
+      setWizardOpen(true);
+      setCurrentStep(3);
+      // Clean up the URL
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+  }, [searchString]);
 
   const selectedCountry = countries.find(c => c.code === country);
 
@@ -152,65 +164,9 @@ export default function Onboarding() {
       setCurrentStep(currentStep - 1);
     }
   };
-
-  const handleConnectBank = async (connectionType: "current_account" | "credit_card") => {
-    try {
-      setIsConnecting(true);
-      const returnUrl = window.location.pathname;
-      const response = await fetch(`/api/truelayer/auth-url?connectionType=${connectionType}&returnUrl=${encodeURIComponent(returnUrl)}`, {
-        credentials: "include",
-      });
-      
-      if (!response.ok) {
-        throw new Error("Failed to get authentication URL");
-      }
-      
-      const data = await response.json();
-      window.location.href = data.authUrl;
-    } catch (error: any) {
-      console.error("[Onboarding] Connect bank error:", error);
-      toast({
-        title: "Connection Error",
-        description: error.message || "Failed to connect to bank. Please try again.",
-        variant: "destructive",
-      });
-      setIsConnecting(false);
-    }
-  };
-
-  const handleGenerateReport = async () => {
-    try {
-      setIsGeneratingReport(true);
-      
-      const response = await fetch("/api/finances/initialize-analysis", {
-        method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-      });
-      
-      const data = await response.json();
-      
-      if (!response.ok) {
-        throw new Error(data.message || "Failed to generate report");
-      }
-      
-      toast({
-        title: "Success",
-        description: data.message || "Ecosystem synchronized.",
-      });
-      
-      // Navigate to the dashboard/accounts page
-      setLocation("/budget");
-    } catch (error: any) {
-      console.error("[Onboarding] Generate report error:", error);
-      toast({
-        title: "Error",
-        description: error.message || "Failed to generate report. Please try again.",
-        variant: "destructive",
-      });
-    } finally {
-      setIsGeneratingReport(false);
-    }
+  
+  const handleWizardComplete = () => {
+    setLocation("/budget");
   };
 
   return (
@@ -393,44 +349,36 @@ export default function Onboarding() {
 
         {currentStep === 3 && (
           <Card>
-            <CardHeader>
+            <CardHeader className="text-center">
               <CardTitle className="text-2xl font-semibold">Connect Your Bank Accounts</CardTitle>
               <CardDescription>
-                Securely link your bank accounts to analyze your spending and income patterns.
+                Securely link your bank accounts and credit cards to analyze your spending patterns.
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-6">
-              <div className="grid gap-4 md:grid-cols-2">
-                <div 
-                  onClick={() => !isConnecting && handleConnectBank("current_account")}
-                  className={cn(
-                    "flex flex-col items-center justify-center gap-3 p-6 rounded-lg border-2 cursor-pointer transition-colors",
-                    isConnecting ? "opacity-50 cursor-not-allowed" : "hover-elevate"
-                  )}
-                  data-testid="button-connect-current-account"
-                >
-                  {isConnecting ? (
-                    <Loader2 className="h-8 w-8 animate-spin" />
-                  ) : (
-                    <Building2 className="h-8 w-8 text-primary" />
-                  )}
-                  <span className="font-medium">Connect Current Account</span>
+              <div className="flex flex-col items-center gap-6 py-4">
+                <div className="grid grid-cols-2 gap-4 text-center">
+                  <div className="flex flex-col items-center gap-2 p-4 rounded-lg bg-muted/50">
+                    <Landmark className="h-8 w-8 text-primary" />
+                    <span className="text-sm font-medium">Bank Accounts</span>
+                    <span className="text-xs text-muted-foreground">Current & savings accounts</span>
+                  </div>
+                  <div className="flex flex-col items-center gap-2 p-4 rounded-lg bg-muted/50">
+                    <CreditCard className="h-8 w-8 text-primary" />
+                    <span className="text-sm font-medium">Credit Cards</span>
+                    <span className="text-xs text-muted-foreground">All your credit accounts</span>
+                  </div>
                 </div>
-                <div 
-                  onClick={() => !isConnecting && handleConnectBank("credit_card")}
-                  className={cn(
-                    "flex flex-col items-center justify-center gap-3 p-6 rounded-lg border-2 cursor-pointer transition-colors",
-                    isConnecting ? "opacity-50 cursor-not-allowed" : "hover-elevate"
-                  )}
-                  data-testid="button-connect-credit-card"
+                
+                <Button 
+                  size="lg" 
+                  onClick={() => setWizardOpen(true)}
+                  className="gap-2"
+                  data-testid="button-open-connection-wizard"
                 >
-                  {isConnecting ? (
-                    <Loader2 className="h-8 w-8 animate-spin" />
-                  ) : (
-                    <FileText className="h-8 w-8 text-primary" />
-                  )}
-                  <span className="font-medium">Connect Credit Card</span>
-                </div>
+                  <Zap className="h-5 w-5" />
+                  Connect Your Accounts
+                </Button>
               </div>
               
               {hasConnectedAccounts && (
@@ -464,12 +412,26 @@ export default function Onboarding() {
                       </li>
                     ))}
                   </ul>
+                  {hasStagedAccounts && (
+                    <div className="mt-3 pt-3 border-t">
+                      <Button 
+                        variant="outline" 
+                        size="sm" 
+                        onClick={() => setWizardOpen(true)}
+                        className="w-full gap-2"
+                        data-testid="button-reopen-wizard"
+                      >
+                        <Zap className="h-4 w-4" />
+                        Continue Setup & Analyze
+                      </Button>
+                    </div>
+                  )}
                 </div>
               )}
               
               <div className="rounded-lg border-2 border-primary/20 bg-primary/5 p-4">
                 <p className="text-sm">
-                  <span className="font-medium">Tip:</span> Connect all your current accounts and credit cards for the most accurate analysis. You can add more accounts later.
+                  <span className="font-medium">Why staged connection?</span> Resolve analyzes all your accounts together to detect internal transfers and give you an accurate "Safe to Spend" amount. Connect everything first, then analyze once.
                 </p>
               </div>
             </CardContent>
@@ -479,36 +441,15 @@ export default function Onboarding() {
         {currentStep === 4 && (
           <Card>
             <CardHeader className="text-center">
-              <CardTitle className="text-2xl font-semibold">Generate Your Resolve Report</CardTitle>
+              <CardTitle className="text-2xl font-semibold">Ready to Analyze</CardTitle>
               <CardDescription>
                 {hasConnectedAccounts 
-                  ? `Analyze ${connectedAccountsCount} connected account${connectedAccountsCount > 1 ? 's' : ''} to create your personalized financial overview.`
+                  ? `You have ${connectedAccountsCount} account${connectedAccountsCount > 1 ? 's' : ''} ready for analysis.`
                   : "Connect at least one bank account to generate your report."}
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-6">
-              <div className="flex justify-center">
-                <Button
-                  size="lg"
-                  onClick={handleGenerateReport}
-                  disabled={!hasStagedAccounts || isGeneratingReport || isAnalyzing}
-                  data-testid="button-generate-report"
-                >
-                  {isGeneratingReport || isAnalyzing ? (
-                    <>
-                      <Loader2 className="mr-2 h-5 w-5 animate-spin" />
-                      {isAnalyzing ? "Processing..." : "Analyzing..."}
-                    </>
-                  ) : (
-                    <>
-                      <FileText className="mr-2 h-5 w-5" />
-                      Generate Resolve Report
-                    </>
-                  )}
-                </Button>
-              </div>
-              
-              {!hasConnectedAccounts && (
+              {!hasConnectedAccounts ? (
                 <div className="text-center">
                   <p className="text-sm text-muted-foreground mb-4">
                     You haven't connected any bank accounts yet.
@@ -521,24 +462,34 @@ export default function Onboarding() {
                     Go Back to Connect Accounts
                   </Button>
                 </div>
-              )}
-              
-              {hasConnectedAccounts && !hasStagedAccounts && (
-                <div className="text-center space-y-2">
+              ) : !hasStagedAccounts ? (
+                <div className="text-center space-y-4">
+                  <div className="flex items-center justify-center gap-2 text-green-600">
+                    <Check className="h-6 w-6" />
+                    <span className="font-medium">All accounts analyzed</span>
+                  </div>
                   <p className="text-sm text-muted-foreground">
-                    All accounts have already been analyzed. You can connect more accounts or continue to your dashboard.
+                    Your transaction history has been analyzed. You can view your insights on the dashboard.
                   </p>
-                  <Button variant="outline" onClick={() => setLocation("/budget")}>
-                    Go to Dashboard
+                  <Button onClick={() => setLocation("/budget")} data-testid="button-go-to-dashboard">
+                    View Dashboard
+                    <ArrowRight className="ml-2 h-4 w-4" />
                   </Button>
                 </div>
-              )}
-              
-              {hasStagedAccounts && (
-                <div className="text-center space-y-2">
+              ) : (
+                <div className="text-center space-y-4">
                   <p className="text-sm text-muted-foreground">
-                    This will analyze 6 months of transaction history across {stagedCount} account{stagedCount > 1 ? 's' : ''}.
+                    {stagedCount} account{stagedCount > 1 ? 's' : ''} ready for analysis.
                   </p>
+                  <Button 
+                    size="lg"
+                    onClick={() => setWizardOpen(true)}
+                    className="gap-2"
+                    data-testid="button-analyze-accounts"
+                  >
+                    <Zap className="h-5 w-5" />
+                    Analyze Transaction History
+                  </Button>
                 </div>
               )}
             </CardContent>
@@ -569,6 +520,12 @@ export default function Onboarding() {
           )}
         </div>
       </main>
+      
+      <StagedOnboardingWizard 
+        open={wizardOpen} 
+        onOpenChange={setWizardOpen}
+        onAnalysisComplete={handleWizardComplete}
+      />
     </div>
   );
 }
