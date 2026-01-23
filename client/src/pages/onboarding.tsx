@@ -11,7 +11,6 @@ import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, Command
 import { ProgressStepper } from "@/components/progress-stepper";
 import { Logo } from "@/components/logo";
 import { ThemeToggle } from "@/components/theme-toggle";
-import { StagedOnboardingWizard } from "@/components/staged-onboarding-wizard";
 import { ArrowRight, ArrowLeft, Check, ChevronsUpDown, Loader2, Landmark, CreditCard, Zap } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { countries } from "@/lib/countries";
@@ -38,18 +37,6 @@ export default function Onboarding() {
   const [countryOpen, setCountryOpen] = useState(false);
   const [regionOpen, setRegionOpen] = useState(false);
   const [isDetectingLocation, setIsDetectingLocation] = useState(false);
-  const [wizardOpen, setWizardOpen] = useState(false);
-  
-  // Check for wizard=open query param (set after TrueLayer callback)
-  useEffect(() => {
-    const params = new URLSearchParams(searchString);
-    if (params.get("wizard") === "open") {
-      setWizardOpen(true);
-      setCurrentStep(3);
-      // Clean up the URL
-      window.history.replaceState({}, "", window.location.pathname);
-    }
-  }, [searchString]);
 
   const selectedCountry = countries.find(c => c.code === country);
 
@@ -165,9 +152,6 @@ export default function Onboarding() {
     }
   };
   
-  const handleWizardComplete = () => {
-    setLocation("/budget");
-  };
 
   return (
     <div className="flex flex-col min-h-screen bg-background">
@@ -370,15 +354,10 @@ export default function Onboarding() {
                   </div>
                 </div>
                 
-                <Button 
-                  size="lg" 
-                  onClick={() => setWizardOpen(true)}
-                  className="gap-2"
-                  data-testid="button-open-connection-wizard"
-                >
-                  <Zap className="h-5 w-5" />
-                  Connect Your Accounts
-                </Button>
+                <p className="text-sm text-muted-foreground text-center max-w-md">
+                  You can connect your bank accounts later from the Current Finances page. 
+                  Click Continue to proceed with onboarding.
+                </p>
               </div>
               
               {hasConnectedAccounts && (
@@ -412,20 +391,6 @@ export default function Onboarding() {
                       </li>
                     ))}
                   </ul>
-                  {hasStagedAccounts && (
-                    <div className="mt-3 pt-3 border-t">
-                      <Button 
-                        variant="outline" 
-                        size="sm" 
-                        onClick={() => setWizardOpen(true)}
-                        className="w-full gap-2"
-                        data-testid="button-reopen-wizard"
-                      >
-                        <Zap className="h-4 w-4" />
-                        Continue Setup & Analyze
-                      </Button>
-                    </div>
-                  )}
                 </div>
               )}
               
@@ -480,15 +445,16 @@ export default function Onboarding() {
                 <div className="text-center space-y-4">
                   <p className="text-sm text-muted-foreground">
                     {stagedCount} account{stagedCount > 1 ? 's' : ''} ready for analysis.
+                    Head to Current Finances to analyze your transactions.
                   </p>
                   <Button 
                     size="lg"
-                    onClick={() => setWizardOpen(true)}
+                    onClick={() => setLocation("/current-finances?wizard=open")}
                     className="gap-2"
                     data-testid="button-analyze-accounts"
                   >
                     <Zap className="h-5 w-5" />
-                    Analyze Transaction History
+                    Go to Current Finances
                   </Button>
                 </div>
               )}
@@ -520,12 +486,6 @@ export default function Onboarding() {
           )}
         </div>
       </main>
-      
-      <StagedOnboardingWizard 
-        open={wizardOpen} 
-        onOpenChange={setWizardOpen}
-        onAnalysisComplete={handleWizardComplete}
-      />
     </div>
   );
 }

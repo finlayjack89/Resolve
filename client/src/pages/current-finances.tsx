@@ -8,7 +8,7 @@ import { RefreshCw, Wallet, Building2, TrendingUp, TrendingDown, PiggyBank, Aler
 import { formatCurrency } from "@/lib/format";
 import { useAuth } from "@/lib/auth-context";
 import { ConnectedAccountTile } from "@/components/connected-account-tile";
-import { ConnectBankDialog } from "@/components/connect-bank-dialog";
+import { StagedOnboardingWizard } from "@/components/staged-onboarding-wizard";
 import { EnrichmentProgressModal } from "@/components/enrichment-progress-modal";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -72,7 +72,7 @@ export default function CurrentFinances() {
   const searchString = useSearch();
   const [refreshingAccountId, setRefreshingAccountId] = useState<string | null>(null);
   const [removingAccountId, setRemovingAccountId] = useState<string | null>(null);
-  const [showConnectDialog, setShowConnectDialog] = useState(false);
+  const [showWizard, setShowWizard] = useState(false);
   const [showEnrichmentModal, setShowEnrichmentModal] = useState(false);
   const [enrichmentJobId, setEnrichmentJobId] = useState<string | null>(null);
   const [showEmailPromptModal, setShowEmailPromptModal] = useState(false);
@@ -90,9 +90,11 @@ export default function CurrentFinances() {
   // Handle OAuth callback - check for ?connected=true or ?email_connected=true in URL
   useEffect(() => {
     const params = new URLSearchParams(searchString);
-    if (params.get("connected") === "true") {
-      // Close the connect dialog if it was open
-      setShowConnectDialog(false);
+    if (params.get("wizard") === "open") {
+      setShowWizard(true);
+      setLocation("/current-finances", { replace: true });
+    } else if (params.get("connected") === "true") {
+      setShowWizard(false);
       // Clear URL params
       setLocation("/current-finances", { replace: true });
       // Start enrichment process
@@ -154,7 +156,7 @@ export default function CurrentFinances() {
       });
       return;
     }
-    setShowConnectDialog(true);
+    setShowWizard(true);
   };
 
   const handleEnrichmentComplete = async (result: any) => {
@@ -204,6 +206,15 @@ export default function CurrentFinances() {
         variant: "destructive",
       });
     }
+  };
+
+  const handleWizardComplete = () => {
+    setShowWizard(false);
+    queryClient.invalidateQueries({ queryKey: ["/api/current-finances/combined"] });
+    toast({
+      title: "Analysis Complete",
+      description: "Your transaction history has been analyzed successfully.",
+    });
   };
 
   const handleEnrichmentError = (error: string) => {
@@ -511,11 +522,11 @@ export default function CurrentFinances() {
         )}
       </main>
 
-      {/* Connect Bank Account Dialog */}
-      <ConnectBankDialog
-        open={showConnectDialog}
-        onOpenChange={setShowConnectDialog}
-        returnUrl="/current-finances"
+      {/* Staged Onboarding Wizard */}
+      <StagedOnboardingWizard
+        open={showWizard}
+        onOpenChange={setShowWizard}
+        onAnalysisComplete={handleWizardComplete}
       />
 
       {/* Enrichment Progress Modal */}
