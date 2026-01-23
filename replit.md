@@ -51,12 +51,20 @@ Preferred communication style: Simple, everyday language.
 - **Recalibration Endpoint**: POST `/api/current-finances/account/:id/recalibrate` forces recalculation of analysisSummary from existing transactions without requiring TrueLayer sync or Python enrichment. Useful when transaction flags (like excludeFromAnalysis) have been updated or budget calculation logic has changed.
 - **PayPal/Amazon Confidence Penalty**: Payment processors (PayPal, Amazon, eBay, Klarna, Clearpay, Afterpay) detected in original bank description trigger 0.5x confidence penalty, dropping from 0.80 to 0.40 and triggering Layer 2 (Context Hunter) for better categorization.
 - **Closed-Period Budget Analysis (Phase 3)**: Statistically accurate Safe-to-Spend calculation:
-  - Transactions split into `closedHistory` (complete past months) and `activeMonth` (current partial month)
+  - Transactions split into `closedHistory` (complete past 6 months only) and `activeMonth` (current partial month)
   - Historical averages calculated from ONLY closed history for statistical accuracy
+  - 6-month lookback cutoff filters older transactions from average calculations entirely (both numerator and denominator aligned)
   - `closedMonthsAnalyzed` field indicates number of full months used (capped at 6)
   - `currentMonthPacing` nested object contains: currentMonthSpendCents, currentMonthIncomeCents, projectedMonthSpendCents, projectedMonthIncomeCents, daysPassed, totalDaysInMonth, monthStartDate, monthEndDate
   - Edge case: When no closed history exists (new user in first month), projections from activeMonth are used as estimates with `analysisMonths=0` to indicate projected data
   - Legacy `analysisMonths` field preserved for backwards compatibility
+- **Retroactive Consistency (Phase 3b)**: Handles month-end boundary problem where transfers are detected across period boundaries:
+  - `reconcileTransactions()` now returns `affectedAccountIds: Set<string>` and `modifiedTransactionDates: Date[]`
+  - Background sync tracks all accounts and dates affected by reconciliation updates (transfers, refunds, bounces)
+  - **Dirty History Check**: Detects if any modified transaction dates fall before current month start (closed period altered)
+  - When closed period is modified, logs: `[Background Sync] Retroactive change detected. Forcing recalculation for affected accounts.`
+  - **Multi-account Recalibration**: Instead of recalibrating only the synced account, iterates through ALL affected account IDs
+  - Ensures that if a sync on Barclays detects a transfer to Amex, both accounts' budgets are immediately corrected
 - **Recurring Payment Projection Engine (Phase 4)**: Detects recurring bills and projects upcoming payments:
   - `recurring_patterns` table stores detected patterns with: merchantName, frequency (WEEKLY/FORTNIGHTLY/MONTHLY/QUARTERLY/ANNUAL), avgAmountCents, anchorDay, nextDueDate, confidenceScore
   - `detectRecurringPatterns()` function in server/services/frequency-detection.ts groups transactions by merchant, analyzes payment intervals, classifies frequency using median interval (±tolerance)
