@@ -91,7 +91,10 @@ export default function CurrentFinances() {
   useEffect(() => {
     const params = new URLSearchParams(searchString);
     if (params.get("wizard") === "open") {
-      setShowWizard(true);
+      // Only open wizard for authenticated users (same check as handleConnectBank)
+      if (user?.id && user.id !== "guest-user") {
+        setShowWizard(true);
+      }
       setLocation("/current-finances", { replace: true });
     } else if (params.get("connected") === "true") {
       setShowWizard(false);
