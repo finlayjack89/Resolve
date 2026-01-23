@@ -33,6 +33,7 @@ interface ConnectedAccountSummary {
   currency: string | null;
   connectionStatus: string | null;
   connectionError?: string | null;
+  processingStatus?: string | null;
   isSideHustle: boolean | null;
   lastSyncedAt: string | null;
   lastEnrichedAt: string | null;
@@ -131,6 +132,18 @@ export function ConnectedAccountTile({ account, currency, isRefreshing, onRefres
             <Badge variant="secondary" className="gap-1" data-testid={`badge-side-hustle-${account.id}`}>
               <Briefcase className="h-3 w-3" />
               Side Hustle
+            </Badge>
+          )}
+          {account.processingStatus === "STAGED" && (
+            <Badge variant="outline" className="gap-1 border-amber-500 text-amber-600 dark:text-amber-400" data-testid={`badge-staged-${account.id}`}>
+              <Clock className="h-3 w-3" />
+              Ready
+            </Badge>
+          )}
+          {account.processingStatus === "ANALYZING" && (
+            <Badge variant="outline" className="gap-1 border-blue-500 text-blue-600 dark:text-blue-400" data-testid={`badge-analyzing-${account.id}`}>
+              <Loader2 className="h-3 w-3 animate-spin" />
+              Analyzing
             </Badge>
           )}
           {hasError ? (

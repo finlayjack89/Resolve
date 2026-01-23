@@ -438,9 +438,29 @@ export default function Onboarding() {
                   <h4 className="font-medium mb-2">Connected Accounts ({connectedAccountsCount})</h4>
                   <ul className="space-y-2">
                     {trueLayerStatus?.accounts?.map((account) => (
-                      <li key={account.id} className="flex items-center gap-2 text-sm text-muted-foreground">
-                        <Check className="h-4 w-4 text-green-500" />
-                        {account.institutionName} - {account.accountName}
+                      <li key={account.id} className="flex items-center justify-between text-sm" data-testid={`li-account-${account.id}`}>
+                        <div className="flex items-center gap-2 text-muted-foreground">
+                          <Check className="h-4 w-4 text-green-500" />
+                          {account.institutionName} - {account.accountName}
+                        </div>
+                        {account.processingStatus === "STAGED" ? (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-full bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400" data-testid={`badge-staged-${account.id}`}>
+                            Ready to Analyze
+                          </span>
+                        ) : account.processingStatus === "ACTIVE" ? (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-full bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400" data-testid={`badge-active-${account.id}`}>
+                            Analyzed
+                          </span>
+                        ) : account.processingStatus === "ANALYZING" ? (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-full bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400" data-testid={`badge-analyzing-${account.id}`}>
+                            <Loader2 className="h-3 w-3 animate-spin" />
+                            Analyzing...
+                          </span>
+                        ) : account.processingStatus === "ERROR" ? (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 text-xs font-medium rounded-full bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400" data-testid={`badge-error-${account.id}`}>
+                            Error
+                          </span>
+                        ) : null}
                       </li>
                     ))}
                   </ul>

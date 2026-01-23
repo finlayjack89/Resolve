@@ -27,6 +27,7 @@ import {
 import { triggerAccountSync, isAccountSyncing, recalibrateAccountBudget } from "../services/background-sync";
 import { detectGhostPairs } from "../services/reconciliation";
 import { detectRecurringPatterns } from "../services/frequency-detection";
+import { analyzeBudget } from "../services/budget-engine";
 import {
   fetchTransactions,
   fetchCardTransactions,
@@ -202,54 +203,6 @@ async function recalculateUserBudgetFromAccounts(userId: string): Promise<void> 
   console.log(`[Budget Recalc] User ${userId}: current=${currentBudgetCents}, potential=${potentialBudgetCents}`);
 }
 
-function aggregateAnalysisSummaries(
-  accounts: Array<{ item: TrueLayerItem; transactionCount: number }>
-): CombinedFinancesResponse["combined"] {
-  let totalIncome = 0;
-  let employment = 0;
-  let sideHustle = 0;
-  let otherIncome = 0;
-  let fixedCosts = 0;
-  let essentials = 0;
-  let discretionary = 0;
-  let debtPayments = 0;
-  let analysisMonths = 1;
-
-  for (const { item } of accounts) {
-    const summary = item.analysisSummary;
-    if (!summary) continue;
-
-    // Handle side hustle income separately
-    if (item.isSideHustle) {
-      sideHustle += summary.employmentIncomeCents + summary.otherIncomeCents;
-    } else {
-      employment += summary.employmentIncomeCents;
-      otherIncome += summary.otherIncomeCents + summary.sideHustleIncomeCents;
-    }
-    
-    totalIncome += summary.averageMonthlyIncomeCents;
-    fixedCosts += summary.fixedCostsCents;
-    essentials += summary.essentialsCents;
-    discretionary += summary.discretionaryCents;
-    debtPayments += summary.debtPaymentsCents;
-    analysisMonths = Math.max(analysisMonths, summary.analysisMonths);
-  }
-
-  const availableForDebt = Math.max(0, totalIncome - fixedCosts - essentials - debtPayments);
-
-  return {
-    totalIncomeCents: totalIncome,
-    employmentIncomeCents: employment,
-    sideHustleIncomeCents: sideHustle,
-    otherIncomeCents: otherIncome,
-    fixedCostsCents: fixedCosts,
-    essentialsCents: essentials,
-    discretionaryCents: discretionary,
-    debtPaymentsCents: debtPayments,
-    availableForDebtCents: availableForDebt,
-    analysisMonths,
-  };
-}
 
 export function registerCurrentFinancesRoutes(app: Express): void {
   /**
@@ -343,7 +296,8 @@ export function registerCurrentFinancesRoutes(app: Express): void {
 
   /**
    * GET /api/current-finances/combined
-   * Returns aggregated view across all accounts with debt budget calculation
+   * HOLISTIC FIX: Calculates the budget from the UNIFIED stream, not by summing accounts.
+   * This prevents double-counting and respects Ghost Pair exclusions.
    */
   app.get("/api/current-finances/combined", requireAuth, async (req, res) => {
     try {
@@ -351,32 +305,49 @@ export function registerCurrentFinancesRoutes(app: Express): void {
       const items = await storage.getTrueLayerItemsByUserId(userId);
       const user = await storage.getUser(userId);
       
-      console.log(`[DEBUG Combined] User ${userId} has ${items.length} TrueLayer items`);
-      
-      const accountsWithCounts = await Promise.all(
+      // 1. Get Accounts Summary (Bank Truth - for the list view)
+      const accounts = await Promise.all(
         items.map(async (item) => {
           const transactionCount = await storage.getEnrichedTransactionsCountByItemId(item.id);
-          console.log(`[DEBUG Combined] Item ${item.id}: ${transactionCount} transactions, analysisSummary: ${item.analysisSummary ? 'present' : 'missing'}`);
-          if (item.analysisSummary) {
-            console.log(`[DEBUG Combined] Item ${item.id} summary:`, {
-              income: item.analysisSummary.averageMonthlyIncomeCents,
-              fixed: item.analysisSummary.fixedCostsCents,
-              essentials: item.analysisSummary.essentialsCents,
-              discretionary: item.analysisSummary.discretionaryCents,
-              lastUpdated: item.analysisSummary.lastUpdated
-            });
-          }
-          return { item, transactionCount };
+          return buildAccountSummary(item, transactionCount);
         })
       );
 
-      const accounts = accountsWithCounts.map(({ item, transactionCount }) => 
-        buildAccountSummary(item, transactionCount)
-      );
+      // 2. HOLISTIC CALCULATION (Budget Truth)
+      // Fetch ALL transactions for the user
+      const allTransactions = await storage.getEnrichedTransactionsByUserId(userId);
       
-      const combined = aggregateAnalysisSummaries(accountsWithCounts);
-      console.log(`[DEBUG Combined] Aggregated result:`, combined);
-      
+      // Filter out "Ghost Pairs" and excluded items
+      const budgetTransactions = allTransactions
+        .filter(tx => !tx.excludeFromAnalysis)
+        .map(tx => ({
+          description: tx.originalDescription,
+          amount: tx.amountCents / 100, // Convert cents to float for engine
+          transaction_classification: tx.labels || [],
+          transaction_type: tx.entryType === 'incoming' ? "CREDIT" : "DEBIT",
+          date: tx.transactionDate,
+        }));
+
+      // Run the Math Brain on the unified stream
+      const globalAnalysis = analyzeBudget({
+        transactions: budgetTransactions as any, 
+        analysisMonths: 6 
+      });
+
+      // 3. Map the Global Analysis to the Response
+      const combined = {
+        totalIncomeCents: globalAnalysis.averageMonthlyIncomeCents,
+        employmentIncomeCents: 0, // derived in engine breakdown if needed
+        sideHustleIncomeCents: 0, 
+        otherIncomeCents: 0,      
+        fixedCostsCents: globalAnalysis.fixedCostsCents,
+        essentialsCents: globalAnalysis.variableEssentialsCents,
+        discretionaryCents: globalAnalysis.discretionaryCents,
+        debtPaymentsCents: 0, // Calculated separately via debt detection if needed
+        availableForDebtCents: globalAnalysis.safeToSpendCents,
+        analysisMonths: globalAnalysis.closedMonthsAnalyzed || globalAnalysis.analysisMonths,
+      };
+
       // Calculate suggested budget for debt repayment
       // Use 50% of discretionary spending as a conservative suggestion
       const suggestedBudgetCents = Math.round(combined.discretionaryCents * 0.5);
@@ -591,10 +562,8 @@ export function registerCurrentFinancesRoutes(app: Express): void {
               await storage.saveEnrichedTransactions(rawTransactionsToStore);
             }
             
-            // Update status to ACTIVE and set lastSyncedAt
+            // Clear any previous errors but keep in ANALYZING state until Step 6 completes recalibration
             await storage.updateTrueLayerItem(item.id, { 
-              processingStatus: ProcessingStatus.ACTIVE,
-              lastSyncedAt: new Date(),
               connectionError: null,
             });
             
@@ -661,6 +630,21 @@ export function registerCurrentFinancesRoutes(app: Express): void {
       } catch (patternError: any) {
         console.error(`[Initialize Analysis] Error detecting recurring patterns:`, patternError.message);
       }
+      
+      // Step 6: Recalibrate Individual Accounts (The Missing Piece!)
+      // This populates the 'analysisSummary' column so the UI tiles aren't empty
+      const successfulItems = fetchResults.filter(r => r.success).map(r => stagedItems.find(i => i.id === r.id)!);
+      
+      await Promise.all(successfulItems.map(async (item) => {
+        console.log(`[Initialize Analysis] Recalibrating budget for ${item.institutionName}`);
+        await recalibrateAccountBudget(item);
+        
+        // Mark as ACTIVE now that it has data
+        await storage.updateTrueLayerItem(item.id, { 
+          processingStatus: ProcessingStatus.ACTIVE,
+          lastSyncedAt: new Date()
+        });
+      }));
       
       if (failed.length === stagedItems.length) {
         return res.status(500).json({
