@@ -661,7 +661,16 @@ async function syncAccount(item: TrueLayerItem): Promise<void> {
         
         // Fallback: use deterministic categorization
         enrichedData = newTransactions.map(tx => {
-          const isIncoming = tx.amount > 0 || tx.transaction_type === "CREDIT";
+          // CREDIT CARD FIX: For credit cards, the sign semantics are inverted:
+          // - DEBIT on a credit card = spending (should be outgoing/negative for budget)
+          // - CREDIT on a credit card = payment to card (should be incoming/positive for budget)
+          let isIncoming: boolean;
+          if (item.connectionType === "credit_card") {
+            isIncoming = tx.transaction_type === "CREDIT";
+          } else {
+            isIncoming = tx.amount > 0 || tx.transaction_type === "CREDIT";
+          }
+          
           const categoryMapping = mapNtropyLabelsToCategory(
             tx.transaction_classification || [],
             tx.merchant_name,

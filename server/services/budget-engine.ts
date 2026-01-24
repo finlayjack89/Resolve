@@ -6,7 +6,7 @@ import type {
   DetectedDebtPayment,
   BreakdownItem,
 } from "@shared/schema";
-import { startOfMonth, isBefore, differenceInCalendarMonths, getDaysInMonth, differenceInDays } from "date-fns";
+import { startOfMonth, isBefore, differenceInCalendarMonths, getDaysInMonth, differenceInDays, format } from "date-fns";
 
 // Debt-related keywords for detection
 const DEBT_KEYWORDS = [
@@ -212,22 +212,39 @@ export function analyzeBudget(input: BudgetEngineInput): BudgetAnalysisResponse 
     }
     // Transactions older than 6 months are excluded from averages
   }
+  
+  // Debug logging to trace date distribution
+  console.log(`[Budget Engine] Date range: currentMonthStart=${currentMonthStart.toISOString()}, sixMonthsCutoff=${sixMonthsCutoff.toISOString()}`);
+  console.log(`[Budget Engine] Transaction distribution: ${activeMonth.length} in current month, ${closedHistory.length} in closed history, ${transactions.length - activeMonth.length - closedHistory.length} excluded (older than 6 months)`);
 
-  // Find oldest transaction date within the 6-month window for calculating actual months covered
-  let oldestTransactionDate: Date | null = null;
-  if (closedHistory.length > 0) {
-    oldestTransactionDate = closedHistory.reduce((oldest, tx) => {
+  // FIX: Count DISTINCT months with transactions instead of just using oldest date delta
+  // This prevents the issue where 6-month totals are divided by 1 if date parsing is off
+  const distinctMonthsInClosedHistory = new Set<string>();
+  for (const tx of closedHistory) {
+    const txDate = tx.date ? new Date(tx.date) : null;
+    if (txDate && !isNaN(txDate.getTime())) {
+      const monthKey = format(txDate, 'yyyy-MM'); // e.g., "2025-07"
+      distinctMonthsInClosedHistory.add(monthKey);
+    }
+  }
+  
+  // Calculate closedMonthsAnalyzed from DISTINCT months with transactions (max 6)
+  let closedMonthsAnalyzed = Math.min(distinctMonthsInClosedHistory.size, 6);
+  
+  // Fallback: if we have transactions but no distinct months (date parsing issue), use date delta
+  if (closedHistory.length > 0 && closedMonthsAnalyzed === 0) {
+    const oldestTransactionDate = closedHistory.reduce((oldest, tx) => {
       const txDate = tx.date ? new Date(tx.date) : new Date();
       return txDate < oldest ? txDate : oldest;
     }, new Date(closedHistory[0].date || new Date()));
-  }
-
-  // Calculate closedMonthsAnalyzed from the actual data span (max 6)
-  let closedMonthsAnalyzed = 0;
-  if (oldestTransactionDate) {
+    
     const monthsFound = differenceInCalendarMonths(currentMonthStart, oldestTransactionDate);
     closedMonthsAnalyzed = Math.max(1, Math.min(monthsFound, 6));
+    console.log(`[Budget Engine] Date parsing fallback: used delta method, got ${closedMonthsAnalyzed} months`);
   }
+  
+  console.log(`[Budget Engine] Closed period analysis: ${closedHistory.length} transactions across ${distinctMonthsInClosedHistory.size} distinct months (using ${closedMonthsAnalyzed} for averaging)`);
+  console.log(`[Budget Engine] Distinct months: ${Array.from(distinctMonthsInClosedHistory).sort().join(', ')}`);
 
   // Categorize CLOSED HISTORY transactions only for averages
   const incomeItems: BreakdownItem[] = [];
@@ -313,6 +330,10 @@ export function analyzeBudget(input: BudgetEngineInput): BudgetAnalysisResponse 
   // If no closed history, use active month projections as fallback estimates
   const hasClosedHistory = closedHistory.length > 0 && closedMonthsAnalyzed > 0;
   
+  // FIX: Add logging to help debug monthly average calculation issues
+  console.log(`[Budget Engine] Calculating averages: hasClosedHistory=${hasClosedHistory}, divisor=${divisor}`);
+  console.log(`[Budget Engine] Totals from closed history: income=${totalIncomeCents}, fixed=${totalFixedCents}, variable=${totalVariableCents}, discretionary=${totalDiscretionaryCents}`);
+  
   const averageMonthlyIncomeCents = hasClosedHistory 
     ? Math.round(totalIncomeCents / divisor)
     : projectedMonthIncomeCents;
@@ -325,6 +346,8 @@ export function analyzeBudget(input: BudgetEngineInput): BudgetAnalysisResponse 
   const discretionaryCents = hasClosedHistory
     ? Math.round(totalDiscretionaryCents / divisor)
     : projectedMonthSpendCents;
+    
+  console.log(`[Budget Engine] Monthly averages: income=${averageMonthlyIncomeCents}, fixed=${fixedCostsCents}, variable=${variableEssentialsCents}, discretionary=${discretionaryCents}`);
 
   // Safe-to-Spend = Income - Fixed - Variable Essentials
   const safeToSpendCents = Math.max(

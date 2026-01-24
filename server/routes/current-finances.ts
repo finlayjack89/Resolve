@@ -320,13 +320,20 @@ export function registerCurrentFinancesRoutes(app: Express): void {
       // Filter out "Ghost Pairs" and excluded items
       const budgetTransactions = allTransactions
         .filter(tx => !tx.excludeFromAnalysis)
-        .map(tx => ({
-          description: tx.originalDescription,
-          amount: tx.amountCents / 100, // Convert cents to float for engine
-          transaction_classification: tx.labels || [],
-          transaction_type: tx.entryType === 'incoming' ? "CREDIT" : "DEBIT",
-          date: tx.transactionDate,
-        }));
+        .map(tx => {
+          // FIX: The budget engine relies on amount sign to determine income vs spending
+          // amountCents is stored as absolute value, so we need to apply the sign based on entryType
+          const absAmount = tx.amountCents / 100;
+          const signedAmount = tx.entryType === 'incoming' ? absAmount : -absAmount;
+          
+          return {
+            description: tx.originalDescription,
+            amount: signedAmount, // Positive for income, negative for spending
+            transaction_classification: tx.labels || [],
+            transaction_type: tx.entryType === 'incoming' ? "CREDIT" : "DEBIT",
+            date: tx.transactionDate,
+          };
+        });
 
       // Run the Math Brain on the unified stream
       const globalAnalysis = analyzeBudget({
@@ -539,7 +546,22 @@ export function registerCurrentFinancesRoutes(app: Express): void {
             // Store transactions
             if (transactions.length > 0) {
               const rawTransactionsToStore = transactions.map((tx: any) => {
-                const isIncoming = tx.amount > 0 || tx.transaction_type === "CREDIT";
+                // CREDIT CARD FIX: For credit cards, the sign semantics are inverted:
+                // - DEBIT on a credit card = spending (should be outgoing/negative for budget)
+                // - CREDIT on a credit card = payment to card (should be incoming/positive for budget)
+                // For current accounts:
+                // - Positive amount or CREDIT = incoming
+                // - Negative amount or DEBIT = outgoing
+                let isIncoming: boolean;
+                
+                if (item.connectionType === "credit_card") {
+                  // Credit cards: CREDIT = payment received (incoming), DEBIT = spending (outgoing)
+                  isIncoming = tx.transaction_type === "CREDIT";
+                } else {
+                  // Current accounts: positive amount or CREDIT = incoming
+                  isIncoming = tx.amount > 0 || tx.transaction_type === "CREDIT";
+                }
+                
                 return {
                   userId: userId,
                   trueLayerItemId: item.id,
@@ -589,7 +611,129 @@ export function registerCurrentFinancesRoutes(app: Express): void {
       
       console.log(`[Initialize Analysis] Batch complete: ${successful.length} accounts synced, ${failed.length} failed, ${totalTransactions} total transactions`);
       
-      // Step 4.5: Run Ghost Pair Detection
+      // Step 4.5: ENRICHMENT - Run transactions through the enrichment cascade
+      // This was missing and causing transactions to stay in raw TrueLayer format
+      const PYTHON_API_URL_STAGED = process.env.PYTHON_API_URL || "http://localhost:8000";
+      const user = await storage.getUser(userId);
+      const accountHolderName = user?.firstName && user?.lastName 
+        ? `${user.firstName} ${user.lastName}` 
+        : null;
+      const userCountry = user?.country || "GB";
+      const nylasGrants = await storage.getNylasGrantsByUserId(userId);
+      const nylasGrantId = nylasGrants.length > 0 ? nylasGrants[0].grantId : null;
+      
+      // Get pending transactions that need enrichment
+      const pendingTransactions = await storage.getEnrichedTransactionsByUserId(userId);
+      const transactionsToEnrich = pendingTransactions.filter(tx => tx.enrichmentStage === "pending");
+      
+      if (transactionsToEnrich.length > 0) {
+        console.log(`[Initialize Analysis] Enriching ${transactionsToEnrich.length} transactions...`);
+        
+        // Get connected lender names for debt detection - populated from user's debt accounts
+        const userAccounts = await storage.getAccountsByUserId(userId);
+        const connectedLenderNames = userAccounts
+          .filter(acc => acc.lenderName)
+          .map(acc => acc.lenderName!);
+        
+        try {
+          const enrichmentResponse = await fetch(`${PYTHON_API_URL_STAGED}/enrich-transactions`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              transactions: transactionsToEnrich.map(tx => ({
+                transaction_id: tx.trueLayerTransactionId,
+                description: tx.originalDescription,
+                amount: tx.amountCents / 100,
+                currency: tx.currency || "GBP",
+                transaction_type: tx.entryType === "incoming" ? "CREDIT" : "DEBIT",
+                transaction_category: tx.ukCategory,
+                transaction_classification: tx.labels || [],
+                timestamp: tx.transactionDate,
+              })),
+              user_id: userId,
+              analysis_months: 6,
+              account_holder_name: accountHolderName,
+              country: userCountry,
+              nylas_grant_id: nylasGrantId,
+            }),
+          });
+          
+          if (enrichmentResponse.ok) {
+            const data = await enrichmentResponse.json();
+            const enrichedData = data.enriched_transactions || [];
+            console.log(`[Initialize Analysis] Enrichment service returned ${enrichedData.length} enriched transactions`);
+            
+            // Update transactions with enrichment data
+            for (const enriched of enrichedData) {
+              const existingTx = transactionsToEnrich.find(
+                tx => tx.trueLayerTransactionId === enriched.transaction_id
+              );
+              
+              if (existingTx) {
+                // Find the account for this transaction to check connectionType
+                const txItem = stagedItems.find(i => i.id === existingTx.trueLayerItemId);
+                
+                // CREDIT CARD FIX: Re-derive entry type from enrichment with connection type awareness
+                let entryType = enriched.entry_type || existingTx.entryType;
+                if (txItem?.connectionType === "credit_card" && enriched.transaction_type) {
+                  // For credit cards, enforce CREDIT = incoming, DEBIT = outgoing
+                  entryType = enriched.transaction_type === "CREDIT" ? "incoming" : "outgoing";
+                }
+                
+                const categoryMapping = mapNtropyLabelsToCategory(
+                  enriched.labels || [],
+                  enriched.merchant_clean_name,
+                  existingTx.originalDescription,
+                  entryType === "incoming",
+                  connectedLenderNames
+                );
+                
+                await storage.updateEnrichedTransaction(existingTx.id!, {
+                  merchantCleanName: enriched.merchant_clean_name || null,
+                  merchantLogoUrl: enriched.merchant_logo_url || null,
+                  merchantWebsiteUrl: enriched.merchant_website_url || null,
+                  labels: enriched.labels || [],
+                  isRecurring: enriched.is_recurring || false,
+                  recurrenceFrequency: enriched.recurrence_frequency || null,
+                  budgetCategory: categoryMapping.budgetGroup,
+                  ukCategory: categoryMapping.ukCategory,
+                  enrichmentSource: enriched.enrichment_source || "ntropy",
+                  ntropyConfidence: enriched.ntropy_confidence ?? null,
+                  agenticConfidence: enriched.agentic_confidence ?? null,
+                  reasoningTrace: enriched.reasoning_trace || [],
+                  excludeFromAnalysis: enriched.exclude_from_analysis ?? false,
+                  transactionType: enriched.transaction_type || "regular",
+                  linkedTransactionId: enriched.linked_transaction_id || null,
+                  enrichmentStage: enriched.enrichment_source === "ntropy" ? "ntropy_done" 
+                    : enriched.enrichment_source ? "agentic_done" 
+                    : "math_brain_done",
+                });
+              }
+            }
+            console.log(`[Initialize Analysis] Updated ${enrichedData.length} transactions with enrichment data`);
+          } else {
+            console.warn(`[Initialize Analysis] Enrichment service returned ${enrichmentResponse.status}, using fallback categorization`);
+            // Fallback: mark as math_brain_done to indicate basic categorization applied
+            for (const tx of transactionsToEnrich) {
+              await storage.updateEnrichedTransaction(tx.id!, {
+                enrichmentStage: "math_brain_done",
+                enrichmentSource: "math_brain",
+              });
+            }
+          }
+        } catch (enrichError: any) {
+          console.warn(`[Initialize Analysis] Enrichment service unavailable: ${enrichError.message}, using fallback categorization`);
+          // Fallback: mark as math_brain_done
+          for (const tx of transactionsToEnrich) {
+            await storage.updateEnrichedTransaction(tx.id!, {
+              enrichmentStage: "math_brain_done",
+              enrichmentSource: "math_brain",
+            });
+          }
+        }
+      }
+      
+      // Step 5: Run Ghost Pair Detection
       const allTransactions = await storage.getEnrichedTransactionsByUserId(userId);
       const ghostPairs = detectGhostPairs(allTransactions);
       
@@ -1319,7 +1463,7 @@ export function registerCurrentFinancesRoutes(app: Express): void {
           currency: "GBP",
           accessTokenEncrypted: "mock_encrypted_token", // Fake token
           refreshTokenEncrypted: "mock_encrypted_refresh",
-          scaExpiresAt: new Date(now.getTime() + 90 * 24 * 60 * 60 * 1000), // 90 days from now
+          consentExpiresAt: new Date(now.getTime() + 90 * 24 * 60 * 60 * 1000), // 90 days from now
           lastSyncedAt: now,
           connectionStatus: "active",
         });
