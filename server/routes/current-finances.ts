@@ -33,6 +33,8 @@ import {
   fetchCardTransactions,
   calculateDynamicDateRange,
   decryptToken,
+  refreshAccessToken,
+  encryptToken,
 } from "../truelayer";
 
 // Response types for the Current Finances API
@@ -529,7 +531,52 @@ export function registerCurrentFinancesRoutes(app: Express): void {
       const fetchResults = await Promise.all(
         stagedItems.map(async (item) => {
           try {
-            const accessToken = decryptToken(item.accessTokenEncrypted);
+            // TOKEN REFRESH: Check if token is expired and refresh if needed
+            // This fixes the issue where accounts connected yesterday can't be analyzed
+            // because the access token expired (typically after 1 hour)
+            let accessToken = decryptToken(item.accessTokenEncrypted);
+            
+            const isExpired = item.consentExpiresAt && 
+              new Date(item.consentExpiresAt) < new Date();
+            
+            if (isExpired && item.refreshTokenEncrypted) {
+              console.log(`[Initialize Analysis] Token expired for ${item.institutionName}, refreshing...`);
+              try {
+                const refreshToken = decryptToken(item.refreshTokenEncrypted);
+                const newTokens = await refreshAccessToken(refreshToken);
+                
+                // Update the stored tokens
+                await storage.updateTrueLayerItem(item.id, {
+                  accessTokenEncrypted: encryptToken(newTokens.access_token),
+                  refreshTokenEncrypted: newTokens.refresh_token 
+                    ? encryptToken(newTokens.refresh_token) 
+                    : item.refreshTokenEncrypted,
+                  consentExpiresAt: new Date(Date.now() + (newTokens.expires_in * 1000)),
+                  connectionStatus: "active",
+                });
+                
+                accessToken = newTokens.access_token;
+                console.log(`[Initialize Analysis] Token refreshed successfully for ${item.institutionName}`);
+              } catch (refreshError: any) {
+                console.error(`[Initialize Analysis] Token refresh failed for ${item.id}:`, refreshError.message);
+                // Update to expired status so user knows they need to reconnect
+                await storage.updateTrueLayerItem(item.id, { 
+                  processingStatus: ProcessingStatus.ERROR,
+                  connectionStatus: "expired",
+                  connectionError: "Connection expired. Please reconnect this account.",
+                });
+                return { id: item.id, success: false, error: "Token refresh failed - please reconnect" };
+              }
+            } else if (isExpired && !item.refreshTokenEncrypted) {
+              console.log(`[Initialize Analysis] Token expired but no refresh token for ${item.institutionName}`);
+              await storage.updateTrueLayerItem(item.id, { 
+                processingStatus: ProcessingStatus.ERROR,
+                connectionStatus: "expired",
+                connectionError: "Connection expired and cannot be refreshed. Please reconnect this account.",
+              });
+              return { id: item.id, success: false, error: "No refresh token - please reconnect" };
+            }
+            
             let transactions: any[] = [];
             
             // Use appropriate fetch method based on connection type
@@ -593,13 +640,33 @@ export function registerCurrentFinancesRoutes(app: Express): void {
           } catch (error: any) {
             console.error(`[Initialize Analysis] Failed to process account ${item.id}:`, error.message);
             
-            // Update status to ERROR
+            // Parse error message to provide user-friendly messages
+            let connectionError = error.message;
+            let connectionStatus = "error";
+            
+            // Check for specific TrueLayer/Open Banking error patterns
+            if (error.message.includes("sca_exceeded") || error.message.includes("SCA exemption")) {
+              connectionError = "Bank requires fresh authentication. Please reconnect this account.";
+              connectionStatus = "expired";
+            } else if (error.message.includes("Article 10A") || error.message.includes("access_denied")) {
+              connectionError = "Access denied by bank. Please reconnect this account with fresh consent.";
+              connectionStatus = "expired";
+            } else if (error.message.includes("401") || error.message.includes("token")) {
+              connectionError = "Authentication expired. Please reconnect this account.";
+              connectionStatus = "expired";
+            } else if (error.message.includes("403")) {
+              connectionError = "Bank blocked access. Please reconnect this account.";
+              connectionStatus = "expired";
+            }
+            
+            // Update status to ERROR with helpful message
             await storage.updateTrueLayerItem(item.id, { 
               processingStatus: ProcessingStatus.ERROR,
-              connectionError: error.message,
+              connectionError,
+              connectionStatus,
             });
             
-            return { id: item.id, success: false, error: error.message };
+            return { id: item.id, success: false, error: connectionError };
           }
         })
       );
