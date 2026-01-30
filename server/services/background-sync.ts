@@ -89,9 +89,25 @@ export async function recalibrateAccountBudget(item: TrueLayerItem): Promise<voi
     const nextRecalibrationDate = addOneMonth(new Date());
     
     if (transactions.length === 0) {
-      console.log(`[Background Sync] No transactions to analyze for account ${accountId}, updating next recalibration date`);
-      // Still update nextRecalibrationDate to prevent constant retries
+      console.log(`[Background Sync] No transactions to analyze for account ${accountId}, clearing analysisSummary`);
+      // Clear analysisSummary to prevent stale data showing for empty accounts
+      const emptyAnalysisSummary: AccountAnalysisSummary = {
+        averageMonthlyIncomeCents: 0,
+        employmentIncomeCents: 0,
+        otherIncomeCents: 0,
+        sideHustleIncomeCents: 0,
+        fixedCostsCents: 0,
+        essentialsCents: 0,
+        discretionaryCents: 0,
+        debtPaymentsCents: 0,
+        availableForDebtCents: 0,
+        monthsOfData: 0,
+        closedHistoryMonths: 0,
+        activeMonthPacing: null,
+      };
       await storage.updateTrueLayerItem(accountId, {
+        analysisSummary: emptyAnalysisSummary,
+        lastAnalyzedAt: new Date(),
         nextRecalibrationDate: nextRecalibrationDate.toISOString().split('T')[0],
       });
       return;
