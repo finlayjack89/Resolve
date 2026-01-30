@@ -1325,17 +1325,17 @@ export function registerCurrentFinancesRoutes(app: Express): void {
         }
       }
 
-      // Step 5: Re-run budget analysis for each account
-      // We need to recalibrate using the existing recalibrateAccountBudget function
+      // Step 5: Re-run budget analysis for ALL accounts (including empty ones)
+      // Empty accounts need recalibration to clear any stale data
       for (const item of activeItems) {
         try {
+          // Always call recalibrateAccountBudget - it handles 0 transactions by clearing the summary
+          await recalibrateAccountBudget(item);
           const transactions = accountTransactionMap.get(item.id);
           if (transactions && transactions.length > 0) {
-            // Use recalibrateAccountBudget which handles the budget engine call correctly
-            await recalibrateAccountBudget(item);
             totalTransactionsProcessed += transactions.length;
-            accountsProcessed++;
           }
+          accountsProcessed++;
         } catch (analyzeError: any) {
           console.error(`[Current Finances] Failed to analyze account ${item.id}:`, analyzeError.message);
           errors.push(`${item.institutionName}: analysis failed`);
