@@ -3,7 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { RefreshCw, CheckCircle2, AlertCircle, Clock, Briefcase, ChevronRight, Trash2, Loader2, CreditCard } from "lucide-react";
+import { CheckCircle2, AlertCircle, Clock, Briefcase, ChevronRight, Trash2, Loader2, CreditCard } from "lucide-react";
 import { SiVisa, SiMastercard, SiAmericanexpress } from "react-icons/si";
 import { formatCurrency } from "@/lib/format";
 import { formatDistanceToNow } from "date-fns";
@@ -66,13 +66,11 @@ function CardNetworkIcon({ network }: { network: string }) {
 interface ConnectedAccountTileProps {
   account: ConnectedAccountSummary;
   currency: string;
-  isRefreshing?: boolean;
-  onRefresh?: () => void;
   onRemove?: () => void;
   isRemoving?: boolean;
 }
 
-export function ConnectedAccountTile({ account, currency, isRefreshing, onRefresh, onRemove, isRemoving }: ConnectedAccountTileProps) {
+export function ConnectedAccountTile({ account, currency, onRemove, isRemoving }: ConnectedAccountTileProps) {
   const isConnected = account.connectionStatus === "connected" || 
                      account.connectionStatus === "active" || 
                      account.connectionStatus === "pending_enrichment";
@@ -257,45 +255,26 @@ export function ConnectedAccountTile({ account, currency, isRefreshing, onRefres
       </CardContent>
       </Link>
         
-        {(onRefresh || onRemove) && (
-          <div className="px-6 pb-6 flex gap-2">
-            {onRefresh && (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  onRefresh();
-                }}
-                disabled={isRefreshing || isRemoving}
-                className="flex-1"
-                data-testid={`button-refresh-${account.id}`}
-              >
-                <RefreshCw className={`mr-2 h-4 w-4 ${isRefreshing ? "animate-spin" : ""}`} />
-                {isRefreshing ? "Syncing..." : "Re-analyze"}
-              </Button>
-            )}
-            {onRemove && (
-              <Button
-                variant="ghost"
-                size="icon"
-                onClick={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  onRemove();
-                }}
-                disabled={isRefreshing || isRemoving}
-                className="text-destructive hover:text-destructive hover:bg-destructive/10"
-                data-testid={`button-remove-${account.id}`}
-              >
-                {isRemoving ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <Trash2 className="h-4 w-4" />
-                )}
-              </Button>
-            )}
+        {onRemove && (
+          <div className="px-6 pb-6 flex gap-2 justify-end">
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                onRemove();
+              }}
+              disabled={isRemoving}
+              className="text-destructive hover:text-destructive hover:bg-destructive/10"
+              data-testid={`button-remove-${account.id}`}
+            >
+              {isRemoving ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Trash2 className="h-4 w-4" />
+              )}
+            </Button>
           </div>
         )}
     </Card>

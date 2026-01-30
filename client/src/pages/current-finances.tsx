@@ -4,7 +4,10 @@ import { useLocation, useSearch } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { RefreshCw, Wallet, Building2, TrendingUp, TrendingDown, PiggyBank, AlertCircle, Loader2, Mail, Receipt } from "lucide-react";
+import { Switch } from "@/components/ui/switch";
+import { Label } from "@/components/ui/label";
+import { RefreshCw, Wallet, Building2, TrendingUp, TrendingDown, PiggyBank, AlertCircle, Loader2, Mail, Receipt, Clock, RotateCcw, BanknoteIcon } from "lucide-react";
+import { formatDistanceToNow } from "date-fns";
 import { formatCurrency } from "@/lib/format";
 import { useAuth } from "@/lib/auth-context";
 import { ConnectedAccountTile } from "@/components/connected-account-tile";
@@ -70,13 +73,13 @@ export default function CurrentFinances() {
   const { toast } = useToast();
   const [, setLocation] = useLocation();
   const searchString = useSearch();
-  const [refreshingAccountId, setRefreshingAccountId] = useState<string | null>(null);
   const [removingAccountId, setRemovingAccountId] = useState<string | null>(null);
   const [showWizard, setShowWizard] = useState(false);
   const [showEnrichmentModal, setShowEnrichmentModal] = useState(false);
   const [enrichmentJobId, setEnrichmentJobId] = useState<string | null>(null);
   const [showEmailPromptModal, setShowEmailPromptModal] = useState(false);
   const [isConnectingEmail, setIsConnectingEmail] = useState(false);
+  const [syncFromBank, setSyncFromBank] = useState(false);
 
   const { data: nylasGrantStatus, refetch: refetchNylasGrants } = useQuery<{
     nylas_available: boolean;
@@ -292,26 +295,20 @@ export default function CurrentFinances() {
     },
   });
 
-  const analyzeMutation = useMutation({
-    mutationFn: async (accountId: string) => {
-      setRefreshingAccountId(accountId);
-      // Use re-enrich endpoint to process existing transactions through full cascade
-      // This doesn't require TrueLayer connection and triggers Nylas context hunting for low-confidence transactions
-      const response = await apiRequest("POST", `/api/current-finances/account/${accountId}/re-enrich`);
+  const reanalyseAllMutation = useMutation({
+    mutationFn: async (options: { syncFromBank: boolean }) => {
+      const response = await apiRequest("POST", "/api/current-finances/reanalyse-all", { syncFromBank: options.syncFromBank });
       return response.json();
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["/api/current-finances/combined"] });
-      const message = data.transactionsUpdated 
-        ? `Re-enriched ${data.transactionsUpdated} transactions through the full cascade.`
-        : "Account transactions have been re-analyzed.";
-      toast({ title: "Analysis complete", description: message });
+      toast({ 
+        title: "Analysis complete", 
+        description: data.message || `Reanalysed ${data.accountsProcessed} accounts.` 
+      });
     },
     onError: () => {
-      toast({ title: "Analysis failed", description: "Could not re-analyze transactions.", variant: "destructive" });
-    },
-    onSettled: () => {
-      setRefreshingAccountId(null);
+      toast({ title: "Analysis failed", description: "Could not re-analyse accounts.", variant: "destructive" });
     },
   });
 
@@ -319,6 +316,15 @@ export default function CurrentFinances() {
   const combined = data?.combined;
   const budgetForDebt = data?.budgetForDebt;
   const currency = user?.currency || "GBP";
+
+  // Calculate last analysed time from the most recent account analysis
+  const lastAnalysedTime = accounts.reduce((latest, account) => {
+    if (account.lastAnalyzedAt) {
+      const analysedDate = new Date(account.lastAnalyzedAt);
+      return latest === null || analysedDate > latest ? analysedDate : latest;
+    }
+    return latest;
+  }, null as Date | null);
 
   return (
     <div className="min-h-screen bg-background">
@@ -330,15 +336,37 @@ export default function CurrentFinances() {
               Your connected bank accounts and spending analysis
             </p>
           </div>
-          <Button
-            onClick={() => refetch()}
-            variant="outline"
-            disabled={isLoading}
-            data-testid="button-refresh-all"
-          >
-            <RefreshCw className={`mr-2 h-4 w-4 ${isLoading ? "animate-spin" : ""}`} />
-            Refresh All
-          </Button>
+          <div className="flex flex-col items-end gap-2">
+            <div className="flex items-center gap-4">
+              <div className="flex items-center gap-2">
+                <Switch
+                  id="sync-from-bank"
+                  checked={syncFromBank}
+                  onCheckedChange={setSyncFromBank}
+                  disabled={reanalyseAllMutation.isPending}
+                  data-testid="switch-sync-from-bank"
+                />
+                <Label htmlFor="sync-from-bank" className="flex items-center gap-1.5 cursor-pointer text-sm">
+                  <BanknoteIcon className="h-4 w-4" />
+                  Sync new transactions
+                </Label>
+              </div>
+              <Button
+                onClick={() => reanalyseAllMutation.mutate({ syncFromBank })}
+                disabled={reanalyseAllMutation.isPending || isLoading || accounts.length === 0}
+                data-testid="button-reanalyse-all"
+              >
+                <RotateCcw className={`mr-2 h-4 w-4 ${reanalyseAllMutation.isPending ? "animate-spin" : ""}`} />
+                {reanalyseAllMutation.isPending ? "Analysing..." : "Re-analyse All Accounts"}
+              </Button>
+            </div>
+            {lastAnalysedTime && (
+              <div className="flex items-center gap-1.5 text-xs text-muted-foreground" data-testid="text-last-analysed">
+                <Clock className="h-3 w-3" />
+                Last analysed {formatDistanceToNow(lastAnalysedTime, { addSuffix: true })}
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Combined Summary Cards */}
@@ -499,8 +527,6 @@ export default function CurrentFinances() {
                   key={account.id}
                   account={account}
                   currency={currency}
-                  isRefreshing={refreshingAccountId === account.id}
-                  onRefresh={() => analyzeMutation.mutate(account.id)}
                   onRemove={() => handleRemoveAccount(account.id, account.institutionName)}
                   isRemoving={removingAccountId === account.id}
                 />

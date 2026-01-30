@@ -1214,6 +1214,153 @@ export function registerCurrentFinancesRoutes(app: Express): void {
   });
 
   /**
+   * POST /api/current-finances/reanalyse-all
+   * Re-processes all connected accounts through the enrichment cascade together.
+   * This ensures ghost pair detection works across all accounts and budget totals remain consistent.
+   * Optionally syncs new transactions from TrueLayer before re-analysing.
+   */
+  app.post("/api/current-finances/reanalyse-all", requireAuth, async (req, res) => {
+    try {
+      const userId = (req.user as any).id;
+      const { syncFromBank = false } = req.body;
+
+      console.log(`[Current Finances] Starting reanalyse-all for user ${userId}, syncFromBank: ${syncFromBank}`);
+
+      // Get all connected accounts
+      const items = await storage.getTrueLayerItemsByUserId(userId);
+      
+      if (items.length === 0) {
+        return res.status(400).json({ 
+          message: "No connected accounts found. Please connect a bank account first." 
+        });
+      }
+
+      // Filter to only active accounts (not in error state)
+      const activeItems = items.filter(item => 
+        item.connectionStatus === "connected" || 
+        item.connectionStatus === "active" || 
+        item.connectionStatus === "pending_enrichment"
+      );
+
+      if (activeItems.length === 0) {
+        return res.status(400).json({ 
+          message: "No active accounts found. Your bank connections may need to be refreshed." 
+        });
+      }
+
+      let totalTransactionsProcessed = 0;
+      let accountsProcessed = 0;
+      const errors: string[] = [];
+
+      // Step 1: Optionally sync new transactions from TrueLayer
+      if (syncFromBank) {
+        console.log(`[Current Finances] Syncing new transactions from TrueLayer for ${activeItems.length} accounts`);
+        
+        for (const item of activeItems) {
+          try {
+            // Only attempt sync if we have valid tokens
+            if (item.accessTokenEncrypted && item.connectionStatus !== "token_error") {
+              await triggerAccountSync(item.id);
+            }
+          } catch (syncError: any) {
+            console.error(`[Current Finances] Failed to sync account ${item.id}:`, syncError.message);
+            // Continue with other accounts even if one fails to sync
+            errors.push(`${item.institutionName}: sync failed`);
+          }
+        }
+        
+        // Wait a moment for sync to complete (background process)
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      }
+
+      // Step 2: Collect all transactions from all accounts
+      const allTransactions: any[] = [];
+      const accountTransactionMap = new Map<string, any[]>();
+
+      for (const item of activeItems) {
+        try {
+          const transactions = await storage.getEnrichedTransactionsByItemId(item.id);
+          if (transactions.length > 0) {
+            accountTransactionMap.set(item.id, transactions);
+            allTransactions.push(...transactions);
+          }
+        } catch (error: any) {
+          console.error(`[Current Finances] Failed to get transactions for account ${item.id}:`, error.message);
+          errors.push(`${item.institutionName}: failed to read transactions`);
+        }
+      }
+
+      if (allTransactions.length === 0) {
+        return res.status(400).json({ 
+          message: "No transactions found across your accounts. Please sync with your bank first." 
+        });
+      }
+
+      console.log(`[Current Finances] Found ${allTransactions.length} total transactions across ${accountTransactionMap.size} accounts`);
+
+      // Step 3: Detect ghost pairs across ALL accounts together
+      const ghostPairs = detectGhostPairs(allTransactions);
+      console.log(`[Current Finances] Detected ${ghostPairs.length} ghost pairs across all accounts`);
+
+      // Step 4: Update transactions with ghost pair information
+      if (ghostPairs.length > 0) {
+        for (const pair of ghostPairs) {
+          try {
+            // Update the outgoing transaction
+            await storage.updateEnrichedTransaction(pair.outgoingTransactionId, {
+              isInternalTransfer: true,
+              transactionType: "transfer",
+              linkedTransactionId: pair.incomingTransactionId,
+            });
+            
+            // Update the incoming transaction
+            await storage.updateEnrichedTransaction(pair.incomingTransactionId, {
+              isInternalTransfer: true,
+              transactionType: "transfer",
+              linkedTransactionId: pair.outgoingTransactionId,
+            });
+          } catch (pairError: any) {
+            console.error(`[Current Finances] Failed to update ghost pair:`, pairError.message);
+          }
+        }
+      }
+
+      // Step 5: Re-run budget analysis for each account
+      // We need to recalibrate using the existing recalibrateAccountBudget function
+      for (const item of activeItems) {
+        try {
+          const transactions = accountTransactionMap.get(item.id);
+          if (transactions && transactions.length > 0) {
+            // Use recalibrateAccountBudget which handles the budget engine call correctly
+            await recalibrateAccountBudget(item);
+            totalTransactionsProcessed += transactions.length;
+            accountsProcessed++;
+          }
+        } catch (analyzeError: any) {
+          console.error(`[Current Finances] Failed to analyze account ${item.id}:`, analyzeError.message);
+          errors.push(`${item.institutionName}: analysis failed`);
+        }
+      }
+
+      console.log(`[Current Finances] Reanalyse-all complete: ${accountsProcessed} accounts, ${totalTransactionsProcessed} transactions, ${ghostPairs.length} ghost pairs`);
+
+      res.json({
+        success: true,
+        accountsProcessed,
+        totalTransactionsProcessed,
+        ghostPairsDetected: ghostPairs.length,
+        errors: errors.length > 0 ? errors : undefined,
+        message: errors.length > 0 
+          ? `Reanalysed ${accountsProcessed} accounts with ${errors.length} warnings.`
+          : `Successfully reanalysed ${accountsProcessed} accounts and detected ${ghostPairs.length} internal transfers.`,
+      });
+    } catch (error: any) {
+      console.error("[Current Finances] Error in reanalyse-all:", error);
+      res.status(500).json({ message: "Failed to reanalyse accounts" });
+    }
+  });
+
+  /**
    * GET /api/current-finances/refresh-status
    * Returns refresh/sync status for all connected accounts
    */
