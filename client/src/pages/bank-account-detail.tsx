@@ -35,8 +35,11 @@ import {
   Zap,
   CreditCard,
   Gift,
-  HelpCircle
+  HelpCircle,
+  Ghost,
+  Info
 } from "lucide-react";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { formatCurrency } from "@/lib/format";
 import { useAuth } from "@/lib/auth-context";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -71,6 +74,15 @@ interface EnrichedTransactionDetail {
   recurrenceFrequency: string | null;
   isInternalTransfer: boolean | null;
   excludeFromAnalysis: boolean | null;
+  // Ghost transaction fields
+  isGhostTransaction?: boolean;
+  transactionType?: string | null;
+  linkedTransactionId?: string | null;
+  linkedTransactionDetails?: {
+    accountName: string;
+    date: string;
+    amount: number;
+  } | null;
 }
 
 interface AccountAnalysisSummary {
@@ -607,8 +619,14 @@ function TransactionTable({ transactions, currency }: { transactions: EnrichedTr
           {transactions.slice(0, 50).map((tx) => {
             const IconComponent = categoryIcons[tx.ukCategory || "other"] || HelpCircle;
             const isIncoming = tx.entryType === "incoming";
+            const isGhost = tx.isGhostTransaction === true;
+            
             return (
-              <TableRow key={tx.id} data-testid={`row-transaction-${tx.id}`}>
+              <TableRow 
+                key={tx.id} 
+                data-testid={`row-transaction-${tx.id}`}
+                className={isGhost ? "opacity-60" : ""}
+              >
                 <TableCell className="text-muted-foreground">
                   {tx.transactionDate ? format(new Date(tx.transactionDate), "MMM d, yyyy") : "—"}
                 </TableCell>
@@ -617,23 +635,61 @@ function TransactionTable({ transactions, currency }: { transactions: EnrichedTr
                     {tx.merchantLogoUrl && (
                       <img src={tx.merchantLogoUrl} alt="" className="h-6 w-6 rounded-full object-contain" />
                     )}
-                    <div>
-                      <p className="font-medium">{tx.merchantCleanName || tx.originalDescription}</p>
-                      {tx.isRecurring && (
-                        <Badge variant="outline" className="text-xs">
-                          Recurring {tx.recurrenceFrequency && `(${tx.recurrenceFrequency})`}
-                        </Badge>
-                      )}
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <p className="font-medium truncate">{tx.merchantCleanName || tx.originalDescription}</p>
+                        {isGhost && (
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Badge variant="outline" className="gap-1 text-xs shrink-0 border-purple-300 text-purple-600 dark:border-purple-700 dark:text-purple-400" data-testid={`badge-ghost-${tx.id}`}>
+                                <Ghost className="h-3 w-3" />
+                                Ghost
+                                <Info className="h-3 w-3" />
+                              </Badge>
+                            </TooltipTrigger>
+                            <TooltipContent className="max-w-xs">
+                              <p className="font-medium mb-1">Internal Transfer</p>
+                              <p className="text-sm text-muted-foreground mb-2">
+                                This transaction is an internal transfer between your accounts. It appears in your ledger but is excluded from income/expense totals.
+                              </p>
+                              {tx.linkedTransactionDetails && (
+                                <div className="text-sm border-t pt-2 mt-2">
+                                  <p className="font-medium">Matching transaction:</p>
+                                  <p>Account: {tx.linkedTransactionDetails.accountName}</p>
+                                  <p>Date: {format(new Date(tx.linkedTransactionDetails.date), "MMM d, yyyy")}</p>
+                                  <p>Amount: {formatCurrency(Math.abs(tx.linkedTransactionDetails.amount), currency)}</p>
+                                </div>
+                              )}
+                            </TooltipContent>
+                          </Tooltip>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        {tx.isRecurring && (
+                          <Badge variant="outline" className="text-xs">
+                            Recurring {tx.recurrenceFrequency && `(${tx.recurrenceFrequency})`}
+                          </Badge>
+                        )}
+                        {tx.isInternalTransfer && !isGhost && (
+                          <Badge variant="outline" className="text-xs border-amber-300 text-amber-600 dark:border-amber-700 dark:text-amber-400">
+                            Internal Transfer
+                          </Badge>
+                        )}
+                      </div>
                     </div>
                   </div>
                 </TableCell>
                 <TableCell>
                   <div className="flex items-center gap-1">
-                    <IconComponent className="h-4 w-4 text-muted-foreground" />
-                    <span className="capitalize">{tx.ukCategory?.replace(/_/g, " ") || "Other"}</span>
+                    {isGhost ? (
+                      <Ghost className="h-4 w-4 text-purple-500" />
+                    ) : (
+                      <IconComponent className="h-4 w-4 text-muted-foreground" />
+                    )}
+                    <span className="capitalize">{isGhost ? "Transfer" : (tx.ukCategory?.replace(/_/g, " ") || "Other")}</span>
                   </div>
                 </TableCell>
-                <TableCell className={`text-right font-mono font-semibold ${isIncoming ? "text-green-600 dark:text-green-400" : ""}`}>
+                <TableCell className={`text-right font-mono font-semibold ${isIncoming ? "text-green-600 dark:text-green-400" : ""} ${isGhost ? "line-through decoration-1" : ""}`}>
                   {isIncoming ? "+" : "-"}{formatCurrency(Math.abs(tx.amountCents), currency)}
                 </TableCell>
               </TableRow>
@@ -707,10 +763,11 @@ function MonthlyBreakdown({ transactions, currency }: { transactions: EnrichedTr
                       <div className="pl-6 space-y-1">
                         {catGroup.transactions.map((tx) => {
                           const isIncoming = tx.entryType === "incoming";
+                          const isGhost = tx.isGhostTransaction === true;
                           return (
                             <div 
                               key={tx.id} 
-                              className="flex items-center justify-between py-1.5 text-sm"
+                              className={`flex items-center justify-between py-1.5 text-sm ${isGhost ? "opacity-60" : ""}`}
                               data-testid={`monthly-tx-${tx.id}`}
                             >
                               <div className="flex items-center gap-2 min-w-0 flex-1">
@@ -718,11 +775,33 @@ function MonthlyBreakdown({ transactions, currency }: { transactions: EnrichedTr
                                   <img src={tx.merchantLogoUrl} alt="" className="h-5 w-5 rounded-full object-contain shrink-0" />
                                 )}
                                 <span className="truncate">{tx.merchantCleanName || tx.originalDescription}</span>
+                                {isGhost && (
+                                  <Tooltip>
+                                    <TooltipTrigger asChild>
+                                      <Badge variant="outline" className="gap-1 text-xs shrink-0 border-purple-300 text-purple-600 dark:border-purple-700 dark:text-purple-400" data-testid={`badge-ghost-monthly-${tx.id}`}>
+                                        <Ghost className="h-2.5 w-2.5" />
+                                        Ghost
+                                      </Badge>
+                                    </TooltipTrigger>
+                                    <TooltipContent className="max-w-xs">
+                                      <p className="font-medium mb-1">Internal Transfer</p>
+                                      <p className="text-sm text-muted-foreground">
+                                        This transaction is an internal transfer between your accounts.
+                                      </p>
+                                      {tx.linkedTransactionDetails && (
+                                        <div className="text-sm border-t pt-2 mt-2">
+                                          <p className="font-medium">Matching transaction:</p>
+                                          <p>Account: {tx.linkedTransactionDetails.accountName}</p>
+                                        </div>
+                                      )}
+                                    </TooltipContent>
+                                  </Tooltip>
+                                )}
                                 <span className="text-muted-foreground shrink-0">
                                   {tx.transactionDate ? format(new Date(tx.transactionDate), "MMM d") : "—"}
                                 </span>
                               </div>
-                              <span className={`font-mono shrink-0 ml-2 ${isIncoming ? "text-green-600 dark:text-green-400" : ""}`}>
+                              <span className={`font-mono shrink-0 ml-2 ${isIncoming ? "text-green-600 dark:text-green-400" : ""} ${isGhost ? "line-through decoration-1" : ""}`}>
                                 {isIncoming ? "+" : "-"}{formatCurrency(Math.abs(tx.amountCents), currency)}
                               </span>
                             </div>

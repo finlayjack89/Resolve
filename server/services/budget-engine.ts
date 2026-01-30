@@ -67,6 +67,27 @@ const INCOME_CLASSIFICATIONS = [
 // Internal transfer patterns to exclude from income
 const TRANSFER_KEYWORDS = ["Transfer", "TRANSFER", "TFR", "INTERNAL"];
 
+// Returned/refund patterns to exclude from income
+// These are NOT real income - they are money coming back from failed payments
+const RETURNED_PAYMENT_KEYWORDS = [
+  "RETURNED",
+  "DD RETURNED", 
+  "DD RET",
+  "DIRECT DEBIT RETURNED",
+  "REFUND",
+  "REF",
+  "REVERSAL",
+  "REV",
+  "RETURN",
+  "CHARGEBACK",
+  "CREDIT MEMO",
+  "UNPAID",
+  "DISHONOURED",
+  "BOUNCED",
+  "INSUFFICIENT FUNDS",
+  "CANCELLED",
+];
+
 function classificationMatches(
   txClassification: string[],
   patterns: string[][]
@@ -91,6 +112,15 @@ function isInternalTransfer(tx: TrueLayerTransaction): boolean {
   }
   // Check if classification indicates transfer
   if (tx.transaction_classification.some((c) => c.toLowerCase() === "transfer")) {
+    return true;
+  }
+  return false;
+}
+
+function isReturnedOrRefund(tx: TrueLayerTransaction): boolean {
+  // Check if description contains returned payment/refund keywords
+  const upperDesc = tx.description.toUpperCase();
+  if (RETURNED_PAYMENT_KEYWORDS.some((kw) => upperDesc.includes(kw.toUpperCase()))) {
     return true;
   }
   return false;
@@ -135,14 +165,18 @@ function detectDebtPayments(transactions: TrueLayerTransaction[]): DetectedDebtP
   return Array.from(detectedDebts.values());
 }
 
-function categorizeTransaction(tx: TrueLayerTransaction): "income" | "fixed" | "variable" | "discretionary" {
+function categorizeTransaction(tx: TrueLayerTransaction): "income" | "fixed" | "variable" | "discretionary" | "excluded" {
   const classification = tx.transaction_classification;
   const txType = tx.transaction_type;
 
-  // Credits are income (if not internal transfer)
+  // Credits are income (if not internal transfer or returned payment)
   if (tx.amount > 0) {
+    // Returned payments, refunds, and bounced DDs are NOT income - exclude them entirely
+    if (isReturnedOrRefund(tx)) {
+      return "excluded"; // These are not real income - money coming back from failed payments
+    }
     if (isInternalTransfer(tx)) {
-      return "discretionary"; // Exclude from income calculation
+      return "excluded"; // Internal transfers are not income
     }
     if (classificationMatches(classification, INCOME_CLASSIFICATIONS)) {
       return "income";
@@ -257,6 +291,7 @@ export function analyzeBudget(input: BudgetEngineInput): BudgetAnalysisResponse 
   let totalVariableCents = 0;
   let totalDiscretionaryCents = 0;
 
+  let excludedCount = 0;
   for (const tx of closedHistory) {
     const budgetCategory = categorizeTransaction(tx);
     const amountCents = Math.round(Math.abs(tx.amount) * 100);
@@ -283,8 +318,14 @@ export function analyzeBudget(input: BudgetEngineInput): BudgetAnalysisResponse 
           totalDiscretionaryCents += amountCents;
         }
         break;
+      case "excluded":
+        // Returned payments, refunds, transfers - skip entirely from budget calculations
+        excludedCount++;
+        break;
     }
   }
+  
+  console.log(`[Budget Engine] Excluded ${excludedCount} transactions (returns/refunds/transfers) from budget calculations`);
 
   // Calculate ACTIVE MONTH metrics for pacing
   let currentMonthSpendCents = 0;
@@ -292,7 +333,8 @@ export function analyzeBudget(input: BudgetEngineInput): BudgetAnalysisResponse 
 
   for (const tx of activeMonth) {
     const amountCents = Math.round(Math.abs(tx.amount) * 100);
-    if (tx.amount > 0 && !isInternalTransfer(tx)) {
+    // Only count real income - exclude returns, refunds, and transfers
+    if (tx.amount > 0 && !isInternalTransfer(tx) && !isReturnedOrRefund(tx)) {
       currentMonthIncomeCents += amountCents;
     } else if (tx.amount < 0) {
       currentMonthSpendCents += amountCents;

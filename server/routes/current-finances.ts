@@ -73,6 +73,15 @@ export interface EnrichedTransactionDetail {
   transactionDate: string | null;
   isRecurring: boolean | null;
   recurrenceFrequency: string | null;
+  // Ghost transaction fields
+  isGhostTransaction: boolean;
+  transactionType: string | null;
+  linkedTransactionId: string | null;
+  linkedTransactionDetails: {
+    accountName: string;
+    date: string;
+    amount: number;
+  } | null;
 }
 
 export interface CategoryBreakdown {
@@ -252,34 +261,73 @@ export function registerCurrentFinancesRoutes(app: Express): void {
       console.log(`[DEBUG] Fetching transactions for accountId: ${accountId}`);
       const allTransactions = await storage.getEnrichedTransactionsByItemId(accountId);
       
-      // Filter out transactions marked for exclusion (transfers, bounced payments, etc.)
-      const transactions = allTransactions.filter(tx => !tx.excludeFromAnalysis);
-      console.log(`[DEBUG] Found ${allTransactions.length} total transactions, ${transactions.length} after filtering excludeFromAnalysis`);
+      // INCLUDE ghost transactions (transfers) but mark them as such
+      // Only exclude bounced payments and refunds that have linked transactions
+      const transactions = allTransactions.filter(tx => {
+        // Always include ghost/transfer transactions - they should be displayed with special styling
+        if (tx.transactionType === "transfer" || tx.isInternalTransfer) {
+          return true;
+        }
+        // Exclude bounced payments and refunds from the main display
+        if (tx.excludeFromAnalysis && (tx.transactionType === "bounced_payment" || tx.transactionType === "refund" || tx.transactionType === "reversal")) {
+          return false;
+        }
+        return true;
+      });
+      console.log(`[DEBUG] Found ${allTransactions.length} total transactions, ${transactions.length} after filtering`);
       
-      if (transactions.length > 0) {
-        console.log(`[DEBUG] Sample tx:`, {
-          id: transactions[0].id,
-          merchantCleanName: transactions[0].merchantCleanName,
-          ukCategory: transactions[0].ukCategory,
-          originalDescription: transactions[0].originalDescription
-        });
+      // Build a lookup map for linked transaction details
+      const allItemTransactions = allTransactions;
+      const linkedTransactionsMap = new Map<string, { accountName: string; date: string; amount: number }>();
+      
+      // Get all TrueLayer items for this user to get account names
+      const userItems = await storage.getTrueLayerItemsByUserId(userId);
+      const itemNameMap = new Map<string, string>();
+      for (const userItem of userItems) {
+        itemNameMap.set(userItem.id, userItem.accountName || userItem.institutionName);
       }
-      const transactionCount = transactions.length;
       
-      const transactionDetails: EnrichedTransactionDetail[] = transactions.map((tx) => ({
-        id: tx.id,
-        trueLayerTransactionId: tx.trueLayerTransactionId,
-        originalDescription: tx.originalDescription,
-        merchantCleanName: tx.merchantCleanName,
-        merchantLogoUrl: tx.merchantLogoUrl,
-        amountCents: tx.amountCents,
-        entryType: tx.entryType,
-        ukCategory: tx.ukCategory,
-        budgetCategory: tx.budgetCategory,
-        transactionDate: tx.transactionDate,
-        isRecurring: tx.isRecurring,
-        recurrenceFrequency: tx.recurrenceFrequency,
-      }));
+      // Build linked transaction details for ghost pairs
+      for (const tx of allItemTransactions) {
+        if (tx.linkedTransactionId) {
+          // Find the linked transaction across all user's accounts
+          const linkedTx = await storage.getEnrichedTransactionById(tx.linkedTransactionId);
+          if (linkedTx) {
+            const linkedAccountName = linkedTx.trueLayerItemId 
+              ? itemNameMap.get(linkedTx.trueLayerItemId) || "Other Account"
+              : "Other Account";
+            linkedTransactionsMap.set(tx.id, {
+              accountName: linkedAccountName,
+              date: linkedTx.transactionDate,
+              amount: linkedTx.amountCents,
+            });
+          }
+        }
+      }
+      
+      const transactionCount = transactions.filter(tx => tx.transactionType !== "transfer" && !tx.isInternalTransfer).length;
+      
+      const transactionDetails: EnrichedTransactionDetail[] = transactions.map((tx) => {
+        const isGhostTransaction = tx.transactionType === "transfer" || tx.isInternalTransfer === true;
+        return {
+          id: tx.id,
+          trueLayerTransactionId: tx.trueLayerTransactionId,
+          originalDescription: tx.originalDescription,
+          merchantCleanName: tx.merchantCleanName,
+          merchantLogoUrl: tx.merchantLogoUrl,
+          amountCents: tx.amountCents,
+          entryType: tx.entryType,
+          ukCategory: tx.ukCategory,
+          budgetCategory: tx.budgetCategory,
+          transactionDate: tx.transactionDate,
+          isRecurring: tx.isRecurring,
+          recurrenceFrequency: tx.recurrenceFrequency,
+          isGhostTransaction,
+          transactionType: tx.transactionType,
+          linkedTransactionId: tx.linkedTransactionId,
+          linkedTransactionDetails: linkedTransactionsMap.get(tx.id) || null,
+        };
+      });
 
       const categoryBreakdown = buildCategoryBreakdown(transactions);
 

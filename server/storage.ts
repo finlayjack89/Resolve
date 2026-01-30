@@ -75,6 +75,7 @@ export interface IStorage {
   deleteTrueLayerItemById(id: string): Promise<void>; // NEW: delete specific account
   
   // Enriched Transactions methods (multi-account support)
+  getEnrichedTransactionById(id: string): Promise<EnrichedTransaction | null>; // Get single transaction by ID
   getEnrichedTransactionsByUserId(userId: string): Promise<EnrichedTransaction[]>;
   getEnrichedTransactionsByItemId(trueLayerItemId: string): Promise<EnrichedTransaction[]>; // NEW: per-account
   getEnrichedTransactionsByItemIdExcludePending(trueLayerItemId: string): Promise<EnrichedTransaction[]>; // UI-safe: excludes pending
@@ -361,6 +362,11 @@ export class DatabaseStorage implements IStorage {
   }
   
   // Enriched Transactions methods (multi-account support)
+  async getEnrichedTransactionById(id: string): Promise<EnrichedTransaction | null> {
+    const [transaction] = await db.select().from(enrichedTransactions).where(eq(enrichedTransactions.id, id));
+    return transaction || null;
+  }
+  
   async getEnrichedTransactionsByUserId(userId: string): Promise<EnrichedTransaction[]> {
     return await db.select().from(enrichedTransactions).where(eq(enrichedTransactions.userId, userId));
   }
@@ -1064,6 +1070,10 @@ class GuestStorageWrapper implements IStorage {
   }
   
   // Enriched Transactions methods - pass through to database (guest users can't use this)
+  async getEnrichedTransactionById(id: string): Promise<EnrichedTransaction | null> {
+    return this.dbStorage.getEnrichedTransactionById(id);
+  }
+  
   async getEnrichedTransactionsByUserId(userId: string): Promise<EnrichedTransaction[]> {
     if (this.isGuest(userId)) return [];
     return this.dbStorage.getEnrichedTransactionsByUserId(userId);

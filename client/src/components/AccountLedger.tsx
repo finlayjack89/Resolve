@@ -1,8 +1,9 @@
 import { format, startOfMonth, isSameMonth } from "date-fns";
-import { Link2, ArrowDownLeft, ArrowUpRight, HelpCircle, Briefcase, Wallet, Home, Car, ShoppingCart, Utensils, Heart, Zap, CreditCard, Gift, Building2, TrendingUp, TrendingDown } from "lucide-react";
+import { Link2, ArrowDownLeft, ArrowUpRight, HelpCircle, Briefcase, Wallet, Home, Car, ShoppingCart, Utensils, Heart, Zap, CreditCard, Gift, Building2, TrendingUp, TrendingDown, Ghost, Info } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { formatCurrency } from "@/lib/format";
 
 export interface LedgerTransaction {
@@ -16,6 +17,13 @@ export interface LedgerTransaction {
   transactionDate: string | null;
   isInternalTransfer?: boolean | null;
   excludeFromAnalysis?: boolean | null;
+  isGhostTransaction?: boolean;
+  linkedTransactionId?: string | null;
+  linkedTransactionDetails?: {
+    accountName: string;
+    date: string;
+    amount: number;
+  } | null;
 }
 
 interface MonthGroup {
@@ -165,18 +173,22 @@ export function AccountLedger({ transactions, currency, showCategoryBreakdown = 
                 {month.transactions.map((tx) => {
                   const isIncoming = tx.entryType === "incoming";
                   const isTransfer = tx.isInternalTransfer === true;
+                  const isGhost = tx.isGhostTransaction === true;
                   const IconComponent = categoryIcons[tx.ukCategory || "other"] || HelpCircle;
                   
                   return (
                     <div 
                       key={tx.id} 
-                      className={`flex items-center justify-between px-4 py-3 ${isTransfer ? "opacity-50" : ""}`}
+                      className={`flex items-center justify-between px-4 py-3 ${isTransfer || isGhost ? "opacity-60" : ""}`}
                       data-testid={`ledger-tx-${tx.id}`}
                       data-transfer={isTransfer}
+                      data-ghost={isGhost}
                     >
                       <div className="flex items-center gap-3 min-w-0 flex-1">
-                        <div className="h-8 w-8 rounded-full bg-muted flex items-center justify-center shrink-0">
-                          {isTransfer ? (
+                        <div className={`h-8 w-8 rounded-full flex items-center justify-center shrink-0 ${isGhost ? "bg-purple-100 dark:bg-purple-900/30" : "bg-muted"}`}>
+                          {isGhost ? (
+                            <Ghost className="h-4 w-4 text-purple-500" />
+                          ) : isTransfer ? (
                             <Link2 className="h-4 w-4 text-muted-foreground" />
                           ) : tx.merchantLogoUrl ? (
                             <img src={tx.merchantLogoUrl} alt="" className="h-6 w-6 rounded-full object-contain" />
@@ -185,11 +197,36 @@ export function AccountLedger({ transactions, currency, showCategoryBreakdown = 
                           )}
                         </div>
                         <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-2">
+                          <div className="flex items-center gap-2 flex-wrap">
                             <span className="font-medium truncate" data-testid={`ledger-tx-name-${tx.id}`}>
                               {tx.merchantCleanName || tx.originalDescription}
                             </span>
-                            {isTransfer && (
+                            {isGhost && (
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <Badge variant="outline" className="gap-1 text-xs shrink-0 border-purple-300 text-purple-600 dark:border-purple-700 dark:text-purple-400" data-testid={`badge-ghost-ledger-${tx.id}`}>
+                                    <Ghost className="h-3 w-3" />
+                                    Ghost
+                                    <Info className="h-3 w-3" />
+                                  </Badge>
+                                </TooltipTrigger>
+                                <TooltipContent className="max-w-xs">
+                                  <p className="font-medium mb-1">Internal Transfer</p>
+                                  <p className="text-sm text-muted-foreground mb-2">
+                                    This is an internal transfer between your accounts. It's shown in your ledger but excluded from income/expense totals.
+                                  </p>
+                                  {tx.linkedTransactionDetails && (
+                                    <div className="text-sm border-t pt-2 mt-2">
+                                      <p className="font-medium">Matching transaction:</p>
+                                      <p>Account: {tx.linkedTransactionDetails.accountName}</p>
+                                      <p>Date: {format(new Date(tx.linkedTransactionDetails.date), "MMM d, yyyy")}</p>
+                                      <p>Amount: {formatCurrency(Math.abs(tx.linkedTransactionDetails.amount), currency)}</p>
+                                    </div>
+                                  )}
+                                </TooltipContent>
+                              </Tooltip>
+                            )}
+                            {isTransfer && !isGhost && (
                               <Badge variant="outline" className="text-xs shrink-0">
                                 Transfer
                               </Badge>
@@ -197,7 +234,7 @@ export function AccountLedger({ transactions, currency, showCategoryBreakdown = 
                           </div>
                           <div className="text-sm text-muted-foreground">
                             {tx.transactionDate ? format(new Date(tx.transactionDate), "MMM d, yyyy") : "—"}
-                            {tx.ukCategory && !isTransfer && (
+                            {tx.ukCategory && !isTransfer && !isGhost && (
                               <span className="ml-2 capitalize">
                                 {tx.ukCategory.replace(/_/g, " ")}
                               </span>
@@ -205,7 +242,7 @@ export function AccountLedger({ transactions, currency, showCategoryBreakdown = 
                           </div>
                         </div>
                       </div>
-                      <div className={`font-mono font-semibold shrink-0 ml-4 ${isIncoming ? "text-green-600 dark:text-green-400" : ""}`}>
+                      <div className={`font-mono font-semibold shrink-0 ml-4 ${isIncoming ? "text-green-600 dark:text-green-400" : ""} ${isGhost ? "line-through decoration-1" : ""}`}>
                         {isIncoming ? "+" : "-"}{formatCurrency(Math.abs(tx.amountCents), currency)}
                       </div>
                     </div>

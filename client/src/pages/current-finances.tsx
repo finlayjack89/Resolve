@@ -90,17 +90,33 @@ export default function CurrentFinances() {
   // Handle OAuth callback - check for ?connected=true or ?email_connected=true in URL
   useEffect(() => {
     const params = new URLSearchParams(searchString);
-    if (params.get("wizard") === "open") {
-      // Only open wizard for authenticated users (same check as handleConnectBank)
+    const isWizardOpen = params.get("wizard") === "open";
+    const isConnected = params.get("connected") === "true";
+    
+    if (isWizardOpen && isConnected) {
+      // User just finished connecting an account from the wizard - STAY IN WIZARD
+      // This maintains user trust by keeping them in the wizard flow until they choose to analyze
+      if (user?.id && user.id !== "guest-user") {
+        setShowWizard(true);
+      }
+      // Clear URL params but keep wizard open
+      setLocation("/current-finances", { replace: true });
+      // Refresh the status to show newly connected account in wizard lobby
+      queryClient.invalidateQueries({ queryKey: ["/api/truelayer/status"] });
+      toast({
+        title: "Account Connected",
+        description: "Your account has been connected. Add more accounts or start analysis when ready.",
+      });
+    } else if (isWizardOpen) {
+      // Just opening wizard (not from connection callback)
       if (user?.id && user.id !== "guest-user") {
         setShowWizard(true);
       }
       setLocation("/current-finances", { replace: true });
-    } else if (params.get("connected") === "true") {
+    } else if (isConnected) {
+      // Connected but NOT from wizard (fallback case)
       setShowWizard(false);
-      // Clear URL params
       setLocation("/current-finances", { replace: true });
-      // Start enrichment process
       startEnrichmentAfterConnection();
     } else if (params.get("email_connected") === "true") {
       // Clear URL params
