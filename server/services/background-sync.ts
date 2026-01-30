@@ -91,6 +91,12 @@ export async function recalibrateAccountBudget(item: TrueLayerItem): Promise<voi
     if (transactions.length === 0) {
       console.log(`[Background Sync] No transactions to analyze for account ${accountId}, clearing analysisSummary`);
       // Clear analysisSummary to prevent stale data showing for empty accounts
+      const now = new Date();
+      const currentMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+      const currentMonthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+      const daysPassed = now.getDate();
+      const totalDaysInMonth = currentMonthEnd.getDate();
+      
       const emptyAnalysisSummary: AccountAnalysisSummary = {
         averageMonthlyIncomeCents: 0,
         employmentIncomeCents: 0,
@@ -101,9 +107,26 @@ export async function recalibrateAccountBudget(item: TrueLayerItem): Promise<voi
         discretionaryCents: 0,
         debtPaymentsCents: 0,
         availableForDebtCents: 0,
-        monthsOfData: 0,
-        closedHistoryMonths: 0,
-        activeMonthPacing: null,
+        breakdown: {
+          income: [],
+          fixedCosts: [],
+          essentials: [],
+          discretionary: [],
+          debtPayments: [],
+        },
+        closedMonthsAnalyzed: 0,
+        analysisMonths: 0,
+        lastUpdated: new Date().toISOString(),
+        currentMonthPacing: {
+          currentMonthSpendCents: 0,
+          currentMonthIncomeCents: 0,
+          projectedMonthSpendCents: 0,
+          projectedMonthIncomeCents: 0,
+          daysPassed,
+          totalDaysInMonth,
+          monthStartDate: currentMonthStart.toISOString().split('T')[0],
+          monthEndDate: currentMonthEnd.toISOString().split('T')[0],
+        },
       };
       await storage.updateTrueLayerItem(accountId, {
         analysisSummary: emptyAnalysisSummary,
