@@ -6,7 +6,8 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
-import { RefreshCw, Wallet, Building2, TrendingUp, TrendingDown, PiggyBank, AlertCircle, Loader2, Mail, Receipt, Clock, RotateCcw, BanknoteIcon } from "lucide-react";
+import { RefreshCw, Wallet, Building2, TrendingUp, TrendingDown, PiggyBank, AlertCircle, Loader2, Mail, Receipt, Clock, RotateCcw, BanknoteIcon, Pencil } from "lucide-react";
+import { Input } from "@/components/ui/input";
 import { formatDistanceToNow } from "date-fns";
 import { formatCurrency } from "@/lib/format";
 import { useAuth } from "@/lib/auth-context";
@@ -36,6 +37,7 @@ interface ConnectedAccountSummary {
   institutionName: string;
   institutionLogoUrl: string | null;
   accountName: string;
+  customDisplayName?: string | null;
   accountType: string | null;
   currency: string | null;
   connectionStatus: string | null;
@@ -80,6 +82,9 @@ export default function CurrentFinances() {
   const [showEmailPromptModal, setShowEmailPromptModal] = useState(false);
   const [isConnectingEmail, setIsConnectingEmail] = useState(false);
   const [syncFromBank, setSyncFromBank] = useState(false);
+  const [renameDialogOpen, setRenameDialogOpen] = useState(false);
+  const [accountToRename, setAccountToRename] = useState<ConnectedAccountSummary | null>(null);
+  const [newAccountName, setNewAccountName] = useState("");
 
   const { data: nylasGrantStatus, refetch: refetchNylasGrants } = useQuery<{
     nylas_available: boolean;
@@ -284,6 +289,44 @@ export default function CurrentFinances() {
     } finally {
       setRemovingAccountId(null);
     }
+  };
+
+  const handleRenameAccount = (account: ConnectedAccountSummary) => {
+    setAccountToRename(account);
+    setNewAccountName(account.customDisplayName || account.accountName);
+    setRenameDialogOpen(true);
+  };
+
+  const renameAccountMutation = useMutation({
+    mutationFn: async ({ accountId, customDisplayName }: { accountId: string; customDisplayName: string }) => {
+      const response = await apiRequest("PATCH", `/api/current-finances/account/${accountId}/rename`, { customDisplayName });
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/current-finances/combined"] });
+      toast({
+        title: "Account Renamed",
+        description: "The account name has been updated.",
+      });
+      setRenameDialogOpen(false);
+      setAccountToRename(null);
+      setNewAccountName("");
+    },
+    onError: (error: any) => {
+      toast({
+        title: "Rename Failed",
+        description: error.message || "Could not rename the account.",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const submitRename = () => {
+    if (!accountToRename || !newAccountName.trim()) return;
+    renameAccountMutation.mutate({
+      accountId: accountToRename.id,
+      customDisplayName: newAccountName.trim(),
+    });
   };
 
   const { data, isLoading, refetch } = useQuery<CombinedFinancesResponse>({
@@ -529,6 +572,7 @@ export default function CurrentFinances() {
                   currency={currency}
                   onRemove={() => handleRemoveAccount(account.id, account.institutionName)}
                   isRemoving={removingAccountId === account.id}
+                  onRename={() => handleRenameAccount(account)}
                 />
               ))}
             </div>
@@ -639,6 +683,61 @@ export default function CurrentFinances() {
                   <Mail className="mr-2 h-4 w-4" />
                   Connect Email
                 </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Rename Account Dialog */}
+      <Dialog open={renameDialogOpen} onOpenChange={setRenameDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Rename Account</DialogTitle>
+            <DialogDescription>
+              Give this account a custom name. This won't affect how the account is identified in your bank.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="py-4">
+            <Label htmlFor="account-name">Custom Name</Label>
+            <Input
+              id="account-name"
+              value={newAccountName}
+              onChange={(e) => setNewAccountName(e.target.value)}
+              placeholder="Enter a custom name"
+              className="mt-2"
+              data-testid="input-account-rename"
+            />
+            {accountToRename && (
+              <p className="text-sm text-muted-foreground mt-2">
+                Original name: {accountToRename.accountName}
+              </p>
+            )}
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setRenameDialogOpen(false);
+                setAccountToRename(null);
+                setNewAccountName("");
+              }}
+              data-testid="button-cancel-rename"
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={submitRename}
+              disabled={renameAccountMutation.isPending}
+              data-testid="button-confirm-rename"
+            >
+              {renameAccountMutation.isPending ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Saving...
+                </>
+              ) : (
+                "Save"
               )}
             </Button>
           </DialogFooter>

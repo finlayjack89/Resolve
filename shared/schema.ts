@@ -214,6 +214,7 @@ export const trueLayerItems = pgTable("truelayer_items", {
   institutionName: text("institution_name").notNull(), // Bank name (e.g., "Barclays", "HSBC")
   institutionLogoUrl: text("institution_logo_url"), // Bank logo URL from TrueLayer
   accountName: text("account_name").notNull(), // Account display name (e.g., "Current Account")
+  customDisplayName: text("custom_display_name"), // User-provided custom name (UI only, doesn't affect API references)
   accountType: text("account_type"), // current, savings, credit_card, etc.
   connectionType: text("connection_type").default("current_account"), // 'current_account' or 'credit_card'
   currency: text("currency").default("GBP"),

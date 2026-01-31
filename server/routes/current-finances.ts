@@ -44,6 +44,7 @@ export interface ConnectedAccountSummary {
   institutionName: string;
   institutionLogoUrl: string | null;
   accountName: string;
+  customDisplayName: string | null;
   accountType: string | null;
   currency: string | null;
   connectionStatus: string | null;
@@ -126,6 +127,7 @@ function buildAccountSummary(
     institutionName: item.institutionName,
     institutionLogoUrl: item.institutionLogoUrl,
     accountName: item.accountName,
+    customDisplayName: item.customDisplayName,
     accountType: item.accountType,
     currency: item.currency,
     connectionStatus: item.connectionStatus,
@@ -341,6 +343,44 @@ export function registerCurrentFinancesRoutes(app: Express): void {
     } catch (error: any) {
       console.error("[Current Finances] Error fetching account detail:", error);
       res.status(500).json({ message: "Failed to fetch account details" });
+    }
+  });
+
+  /**
+   * PATCH /api/current-finances/account/:id/rename
+   * Update the custom display name for an account (UI only, doesn't affect TrueLayer)
+   */
+  app.patch("/api/current-finances/account/:id/rename", requireAuth, async (req, res) => {
+    try {
+      const userId = (req.user as any).id;
+      const accountId = req.params.id;
+      const { customDisplayName } = req.body;
+
+      if (typeof customDisplayName !== 'string') {
+        return res.status(400).json({ message: "customDisplayName must be a string" });
+      }
+
+      // Verify the account belongs to this user
+      const item = await storage.getTrueLayerItemById(accountId);
+      if (!item || item.userId !== userId) {
+        return res.status(404).json({ message: "Account not found" });
+      }
+
+      // Update the custom display name (empty string means clear the custom name)
+      await storage.updateTrueLayerItem(accountId, { 
+        customDisplayName: customDisplayName.trim() || null 
+      });
+
+      console.log(`[Current Finances] Renamed account ${accountId} to "${customDisplayName}"`);
+
+      res.json({ 
+        success: true, 
+        message: "Account renamed successfully",
+        customDisplayName: customDisplayName.trim() || null
+      });
+    } catch (error: any) {
+      console.error("[Current Finances] Error renaming account:", error);
+      res.status(500).json({ message: "Failed to rename account" });
     }
   });
 

@@ -272,14 +272,29 @@ export function registerTrueLayerRoutes(app: Express) {
         }
 
         console.log(`[TrueLayer] Found ${accountsResponse.results.length} accounts for user ${userId}`);
+        
+        // Enhanced logging: Log exact account mappings from TrueLayer for debugging
+        console.log(`[TrueLayer] ===== ACCOUNT MAPPING DEBUG =====`);
+        accountsResponse.results.forEach((acc, idx) => {
+          console.log(`[TrueLayer] Account ${idx + 1}:`);
+          console.log(`[TrueLayer]   - account_id: ${acc.account_id}`);
+          console.log(`[TrueLayer]   - display_name: ${acc.display_name}`);
+          console.log(`[TrueLayer]   - account_type: ${acc.account_type}`);
+          console.log(`[TrueLayer]   - provider: ${acc.provider?.display_name}`);
+          console.log(`[TrueLayer]   - currency: ${acc.currency}`);
+        });
+        console.log(`[TrueLayer] ===== END ACCOUNT MAPPING =====`);
 
         // Process each account - create or update TrueLayerItem per account
         for (const account of accountsResponse.results) {
           const trueLayerAccountId = account.account_id;
           const institutionName = account.provider?.display_name || "Unknown Bank";
+          const institutionLogoUrl = (account.provider as any)?.logo_uri || null;
           const accountName = account.display_name || "Current Account";
           const accountType = account.account_type || "current";
           const currency = account.currency || "GBP";
+          
+          console.log(`[TrueLayer] Processing: ${accountName} (${trueLayerAccountId}) - Logo: ${institutionLogoUrl ? 'Yes' : 'No'}`);
 
           // Check if this specific account already exists for this user
           const existingItem = await storage.getTrueLayerItemByAccountId(userId as string, trueLayerAccountId);
@@ -316,6 +331,7 @@ export function registerTrueLayerRoutes(app: Express) {
               userId: userId as string,
               trueLayerAccountId,
               institutionName,
+              institutionLogoUrl,
               accountName,
               accountType,
               connectionType: "current_account",

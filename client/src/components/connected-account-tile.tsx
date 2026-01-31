@@ -3,7 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { CheckCircle2, AlertCircle, Clock, Briefcase, ChevronRight, Trash2, Loader2, CreditCard } from "lucide-react";
+import { CheckCircle2, AlertCircle, Clock, Briefcase, ChevronRight, Trash2, Loader2, CreditCard, Pencil } from "lucide-react";
 import { SiVisa, SiMastercard, SiAmericanexpress } from "react-icons/si";
 import { formatCurrency } from "@/lib/format";
 import { formatDistanceToNow } from "date-fns";
@@ -28,6 +28,7 @@ interface ConnectedAccountSummary {
   institutionName: string;
   institutionLogoUrl: string | null;
   accountName: string;
+  customDisplayName?: string | null;
   accountType: string | null;
   connectionType?: string | null;
   currency: string | null;
@@ -68,9 +69,10 @@ interface ConnectedAccountTileProps {
   currency: string;
   onRemove?: () => void;
   isRemoving?: boolean;
+  onRename?: () => void;
 }
 
-export function ConnectedAccountTile({ account, currency, onRemove, isRemoving }: ConnectedAccountTileProps) {
+export function ConnectedAccountTile({ account, currency, onRemove, isRemoving, onRename }: ConnectedAccountTileProps) {
   const isConnected = account.connectionStatus === "connected" || 
                      account.connectionStatus === "active" || 
                      account.connectionStatus === "pending_enrichment";
@@ -115,7 +117,7 @@ export function ConnectedAccountTile({ account, currency, onRemove, isRemoving }
             <CardDescription className="truncate" data-testid={`text-account-name-${account.id}`}>
               {isCreditCard && account.partialPan 
                 ? `•••• ${account.partialPan}`
-                : account.accountName}
+                : (account.customDisplayName || account.accountName)}
             </CardDescription>
           </div>
         </div>
@@ -255,26 +257,53 @@ export function ConnectedAccountTile({ account, currency, onRemove, isRemoving }
       </CardContent>
       </Link>
         
-        {onRemove && (
+        {(onRemove || onRename) && (
           <div className="px-6 pb-6 flex gap-2 justify-end">
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                onRemove();
-              }}
-              disabled={isRemoving}
-              className="text-destructive hover:text-destructive hover:bg-destructive/10"
-              data-testid={`button-remove-${account.id}`}
-            >
-              {isRemoving ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Trash2 className="h-4 w-4" />
-              )}
-            </Button>
+            {onRename && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      onRename();
+                    }}
+                    className="text-muted-foreground hover:text-foreground"
+                    data-testid={`button-rename-${account.id}`}
+                  >
+                    <Pencil className="h-4 w-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Rename account</TooltipContent>
+              </Tooltip>
+            )}
+            {onRemove && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      onRemove();
+                    }}
+                    disabled={isRemoving}
+                    className="text-destructive hover:text-destructive hover:bg-destructive/10"
+                    data-testid={`button-remove-${account.id}`}
+                  >
+                    {isRemoving ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Trash2 className="h-4 w-4" />
+                    )}
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Remove account</TooltipContent>
+              </Tooltip>
+            )}
           </div>
         )}
     </Card>
