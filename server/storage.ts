@@ -88,7 +88,7 @@ export interface IStorage {
   deleteEnrichedTransactionsByUserId(userId: string): Promise<void>;
   deleteEnrichedTransactionsByItemId(trueLayerItemId: string): Promise<void>; // NEW: per-account
   cleanupOrphanedEnrichedTransactions(userId: string): Promise<number>; // NEW: cleanup orphans
-  updateEnrichedTransactionReconciliation(id: string, updates: { transactionType?: string; linkedTransactionId?: string | null; excludeFromAnalysis?: boolean }): Promise<void>; // Reconciliation updates
+  updateEnrichedTransactionReconciliation(id: string, updates: { transactionType?: string; linkedTransactionId?: string | null; excludeFromAnalysis?: boolean; isInternalTransfer?: boolean; ecosystemPairId?: string | null }): Promise<void>; // Reconciliation updates
   updateEnrichedTransactionEnrichment(trueLayerTransactionId: string, updates: { enrichmentStage?: string; agenticConfidence?: number | null; enrichmentSource?: string; isSubscription?: boolean; contextData?: Record<string, any>; reasoningTrace?: string[] }): Promise<void>; // Agentic enrichment updates
   updateEnrichedTransaction(id: string, updates: Partial<EnrichedTransaction>): Promise<void>; // General enriched transaction updates for re-enrichment
   
@@ -502,7 +502,7 @@ export class DatabaseStorage implements IStorage {
     return orphanedIds.length;
   }
   
-  async updateEnrichedTransactionReconciliation(id: string, updates: { transactionType?: string; linkedTransactionId?: string | null; excludeFromAnalysis?: boolean }): Promise<void> {
+  async updateEnrichedTransactionReconciliation(id: string, updates: { transactionType?: string; linkedTransactionId?: string | null; excludeFromAnalysis?: boolean; isInternalTransfer?: boolean; ecosystemPairId?: string | null }): Promise<void> {
     const updateObj: any = {};
     if (updates.transactionType !== undefined) {
       updateObj.transactionType = updates.transactionType;
@@ -512,6 +512,12 @@ export class DatabaseStorage implements IStorage {
     }
     if (updates.excludeFromAnalysis !== undefined) {
       updateObj.excludeFromAnalysis = updates.excludeFromAnalysis;
+    }
+    if (updates.isInternalTransfer !== undefined) {
+      updateObj.isInternalTransfer = updates.isInternalTransfer;
+    }
+    if (updates.ecosystemPairId !== undefined) {
+      updateObj.ecosystemPairId = updates.ecosystemPairId;
     }
     if (Object.keys(updateObj).length > 0) {
       await db.update(enrichedTransactions).set(updateObj).where(eq(enrichedTransactions.id, id));
@@ -1129,7 +1135,7 @@ class GuestStorageWrapper implements IStorage {
     return this.dbStorage.cleanupOrphanedEnrichedTransactions(userId);
   }
   
-  async updateEnrichedTransactionReconciliation(id: string, updates: { transactionType?: string; linkedTransactionId?: string | null; excludeFromAnalysis?: boolean }): Promise<void> {
+  async updateEnrichedTransactionReconciliation(id: string, updates: { transactionType?: string; linkedTransactionId?: string | null; excludeFromAnalysis?: boolean; isInternalTransfer?: boolean; ecosystemPairId?: string | null }): Promise<void> {
     return this.dbStorage.updateEnrichedTransactionReconciliation(id, updates);
   }
   

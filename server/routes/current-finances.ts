@@ -82,6 +82,7 @@ export interface EnrichedTransactionDetail {
     accountName: string;
     date: string;
     amount: number;
+    reference?: string;
   } | null;
 }
 
@@ -263,15 +264,19 @@ export function registerCurrentFinancesRoutes(app: Express): void {
       console.log(`[DEBUG] Fetching transactions for accountId: ${accountId}`);
       const allTransactions = await storage.getEnrichedTransactionsByItemId(accountId);
       
-      // INCLUDE ghost transactions (transfers) but mark them as such
-      // Only exclude bounced payments and refunds that have linked transactions
+      // INCLUDE ghost transactions (transfers and bounced payments) but mark them as such
+      // Only exclude refunds/reversals that have linked transactions
       const transactions = allTransactions.filter(tx => {
         // Always include ghost/transfer transactions - they should be displayed with special styling
         if (tx.transactionType === "transfer" || tx.isInternalTransfer) {
           return true;
         }
-        // Exclude bounced payments and refunds from the main display
-        if (tx.excludeFromAnalysis && (tx.transactionType === "bounced_payment" || tx.transactionType === "refund" || tx.transactionType === "reversal")) {
+        // Include bounced payments as ghost transactions - they should be displayed with matched transaction info
+        if (tx.transactionType === "bounced_payment") {
+          return true;
+        }
+        // Exclude pure refunds and reversals from the main display (these are not paired ghost transactions)
+        if (tx.excludeFromAnalysis && (tx.transactionType === "refund" || tx.transactionType === "reversal")) {
           return false;
         }
         return true;
@@ -280,7 +285,7 @@ export function registerCurrentFinancesRoutes(app: Express): void {
       
       // Build a lookup map for linked transaction details
       const allItemTransactions = allTransactions;
-      const linkedTransactionsMap = new Map<string, { accountName: string; date: string; amount: number }>();
+      const linkedTransactionsMap = new Map<string, { accountName: string; date: string; amount: number; reference?: string }>();
       
       // Get all TrueLayer items for this user to get account names
       const userItems = await storage.getTrueLayerItemsByUserId(userId);
@@ -302,6 +307,7 @@ export function registerCurrentFinancesRoutes(app: Express): void {
               accountName: linkedAccountName,
               date: linkedTx.transactionDate,
               amount: linkedTx.amountCents,
+              reference: linkedTx.merchantCleanName || linkedTx.originalDescription,
             });
           }
         }
@@ -310,7 +316,8 @@ export function registerCurrentFinancesRoutes(app: Express): void {
       const transactionCount = transactions.filter(tx => tx.transactionType !== "transfer" && !tx.isInternalTransfer).length;
       
       const transactionDetails: EnrichedTransactionDetail[] = transactions.map((tx) => {
-        const isGhostTransaction = tx.transactionType === "transfer" || tx.isInternalTransfer === true;
+        // Ghost transactions include transfers, internal transfers, and bounced payments (returned DDs)
+        const isGhostTransaction = tx.transactionType === "transfer" || tx.transactionType === "bounced_payment" || tx.isInternalTransfer === true;
         return {
           id: tx.id,
           trueLayerTransactionId: tx.trueLayerTransactionId,

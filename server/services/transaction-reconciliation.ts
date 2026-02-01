@@ -1,4 +1,5 @@
 import { storage } from "../storage";
+import { randomUUID } from "crypto";
 import type { EnrichedTransaction } from "@shared/schema";
 
 const REFUND_KEYWORDS = [
@@ -26,12 +27,16 @@ const MARKETPLACE_MERCHANTS = [
 const BOUNCE_KEYWORDS = [
   "DIRECT DEBIT RETURNED",
   "DD RETURNED",
+  "RETURNED DD",
+  "RETURNED DIRECT DEBIT",
   "UNPAID DIRECT DEBIT",
   "RETURNED PAYMENT",
   "PAYMENT RETURNED",
   "BOUNCED",
   "DISHONOURED",
   "INSUFFICIENT FUNDS",
+  "UNPAID",
+  "RETURNED",
 ];
 
 function hasBounceKeyword(description: string): boolean {
@@ -268,61 +273,81 @@ export async function reconcileTransactions(userId: string): Promise<Reconciliat
   
   // PHASE 3: Detect bounced/returned direct debits
   // These are incoming credits that match outgoing debits (the payment that bounced)
+  // Mark these as ghost pairs so they display with matched transaction info in the UI
+  // IMPORTANT: Must be in the SAME account to be a valid bounced payment pair
   for (const inTx of incoming) {
     if (processedIds.has(inTx.id)) continue;
     
     const description = inTx.merchantCleanName || inTx.originalDescription;
     if (hasBounceKeyword(description)) {
-      // Look for matching outgoing payment (same amount, within 7 days, earlier date)
+      // Look for matching outgoing payment:
+      // - Same amount
+      // - Within 7 days
+      // - Same account (trueLayerItemId)
+      // - Outgoing transaction should be earlier than or same date as the returned DD credit
       let linkedOriginalId: string | null = null;
+      let linkedTx: EnrichedTransaction | null = null;
       
       for (const outTx of outgoing) {
         if (processedIds.has(outTx.id)) continue;
         
+        // Must be from the same account - this is a returned payment, not a cross-account transfer
+        const sameAccount = inTx.trueLayerItemId === outTx.trueLayerItemId;
+        if (!sameAccount) continue;
+        
         const sameAmount = inTx.amountCents === outTx.amountCents;
         const within7Days = daysBetween(inTx.transactionDate, outTx.transactionDate) <= 7;
-        const outTxIsEarlier = new Date(outTx.transactionDate) < new Date(inTx.transactionDate);
+        // The outgoing payment should have occurred before or on the same day as the return
+        const outTxNotAfterReturn = new Date(outTx.transactionDate) <= new Date(inTx.transactionDate);
         
-        if (sameAmount && within7Days && outTxIsEarlier) {
+        if (sameAmount && within7Days && outTxNotAfterReturn) {
           linkedOriginalId = outTx.id;
+          linkedTx = outTx;
           break;
         }
       }
+      
+      // Only mark as ghost pair if we actually found a matching transaction
+      // If no match found, still mark as excluded from analysis but not as a ghost pair
+      const hasMatch = linkedOriginalId !== null;
+      const ecosystemPairId = hasMatch ? randomUUID() : null;
       
       // Mark the bounced return credit as excluded
       await storage.updateEnrichedTransactionReconciliation(inTx.id, {
         transactionType: "bounced_payment",
         linkedTransactionId: linkedOriginalId,
         excludeFromAnalysis: true,
+        // Only mark as internal transfer (ghost) if we found a match
+        isInternalTransfer: hasMatch,
+        ecosystemPairId: ecosystemPairId,
       });
       
       // Track affected account and date for retroactive consistency
       if (inTx.trueLayerItemId) affectedAccountIds.add(inTx.trueLayerItemId);
       modifiedTransactionDates.push(new Date(inTx.transactionDate));
       
-      // Mark the original payment that bounced as excluded too
-      if (linkedOriginalId) {
-        const linkedTx = outgoing.find(o => o.id === linkedOriginalId);
+      // Mark the original payment that bounced as excluded too (only if we found it)
+      if (linkedOriginalId && linkedTx) {
         await storage.updateEnrichedTransactionReconciliation(linkedOriginalId, {
           transactionType: "bounced_payment",
           linkedTransactionId: inTx.id,
           excludeFromAnalysis: true,
+          isInternalTransfer: true, // Mark as internal transfer so it shows as ghost
+          ecosystemPairId: ecosystemPairId,
         });
         processedIds.add(linkedOriginalId);
         transactionsUpdated++;
         
         // Track linked transaction's account and date
-        if (linkedTx) {
-          if (linkedTx.trueLayerItemId) affectedAccountIds.add(linkedTx.trueLayerItemId);
-          modifiedTransactionDates.push(new Date(linkedTx.transactionDate));
-        }
+        if (linkedTx.trueLayerItemId) affectedAccountIds.add(linkedTx.trueLayerItemId);
+        modifiedTransactionDates.push(new Date(linkedTx.transactionDate));
       }
       
       processedIds.add(inTx.id);
       bouncedPaymentsDetected++;
       transactionsUpdated++;
       
-      console.log(`[Reconciliation] Detected bounced payment: ${inTx.originalDescription.substring(0, 40)}... (${inTx.amountCents / 100})`);
+      console.log(`[Reconciliation] Detected bounced payment: ${inTx.originalDescription.substring(0, 40)}... paired with ${linkedTx?.originalDescription?.substring(0, 30) || 'no match'} (${inTx.amountCents / 100})`);
     }
   }
   

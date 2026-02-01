@@ -15,6 +15,7 @@ export interface LedgerTransaction {
   entryType: string;
   ukCategory: string | null;
   transactionDate: string | null;
+  transactionType?: string | null;
   isInternalTransfer?: boolean | null;
   excludeFromAnalysis?: boolean | null;
   isGhostTransaction?: boolean;
@@ -23,6 +24,7 @@ export interface LedgerTransaction {
     accountName: string;
     date: string;
     amount: number;
+    reference?: string;
   } | null;
 }
 
@@ -211,14 +213,28 @@ export function AccountLedger({ transactions, currency, showCategoryBreakdown = 
                                   </Badge>
                                 </TooltipTrigger>
                                 <TooltipContent className="max-w-xs">
-                                  <p className="font-medium mb-1">Internal Transfer</p>
-                                  <p className="text-sm text-muted-foreground mb-2">
-                                    This is an internal transfer between your accounts. It's shown in your ledger but excluded from income/expense totals.
-                                  </p>
+                                  {tx.transactionType === "bounced_payment" ? (
+                                    <>
+                                      <p className="font-medium mb-1">Returned Direct Debit</p>
+                                      <p className="text-sm text-muted-foreground mb-2">
+                                        This payment was returned or bounced. Both the original payment and return are excluded from budget calculations.
+                                      </p>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <p className="font-medium mb-1">Internal Transfer</p>
+                                      <p className="text-sm text-muted-foreground mb-2">
+                                        This is an internal transfer between your accounts. It's shown in your ledger but excluded from income/expense totals.
+                                      </p>
+                                    </>
+                                  )}
                                   {tx.linkedTransactionDetails && (
                                     <div className="text-sm border-t pt-2 mt-2">
                                       <p className="font-medium">Matching transaction:</p>
                                       <p>Account: {tx.linkedTransactionDetails.accountName}</p>
+                                      {tx.linkedTransactionDetails.reference && (
+                                        <p>Reference: {tx.linkedTransactionDetails.reference}</p>
+                                      )}
                                       <p>Date: {format(new Date(tx.linkedTransactionDetails.date), "MMM d, yyyy")}</p>
                                       <p>Amount: {formatCurrency(Math.abs(tx.linkedTransactionDetails.amount), currency)}</p>
                                     </div>

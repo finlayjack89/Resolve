@@ -110,15 +110,21 @@ export function registerTrueLayerRoutes(app: Express) {
       }
     }
     
+    // Helper to properly append query params to URL that may already have params
+    const appendQueryParam = (baseUrl: string, params: string) => {
+      const separator = baseUrl.includes("?") ? "&" : "?";
+      return `${baseUrl}${separator}${params}`;
+    };
+    
     try {
       if (authError) {
         console.error("[TrueLayer] Auth callback error:", authError);
         const errorMessage = getReadableErrorMessage(String(authError));
-        return res.redirect(`${returnUrl}?error=${encodeURIComponent(errorMessage)}`);
+        return res.redirect(appendQueryParam(returnUrl, `error=${encodeURIComponent(errorMessage)}`));
       }
 
       if (!code || typeof code !== "string") {
-        return res.redirect(`${returnUrl}?error=missing_code`);
+        return res.redirect(appendQueryParam(returnUrl, "error=missing_code"));
       }
 
       if (!userId) {
@@ -361,10 +367,10 @@ export function registerTrueLayerRoutes(app: Express) {
       // This allows users to connect multiple accounts before triggering analysis
       console.log(`[TrueLayer] Staged onboarding: ${processedAccountIds.length} accounts ready for batch initialization`);
 
-      res.redirect(`${returnUrl}?connected=true&type=${connectionType}`);
+      res.redirect(appendQueryParam(returnUrl, `connected=true&type=${connectionType}`));
     } catch (error: any) {
       console.error("[TrueLayer] Callback error:", error);
-      res.redirect(`${returnUrl}?error=${encodeURIComponent(error.message)}`);
+      res.redirect(appendQueryParam(returnUrl, `error=${encodeURIComponent(error.message)}`));
     }
   });
 
