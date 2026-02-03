@@ -26,6 +26,7 @@ import {
 } from "../services/category-mapping";
 import { triggerAccountSync, isAccountSyncing, recalibrateAccountBudget } from "../services/background-sync";
 import { detectGhostPairs } from "../services/reconciliation";
+import { reconcileTransactions } from "../services/transaction-reconciliation";
 import { detectRecurringPatterns } from "../services/frequency-detection";
 import { analyzeBudget } from "../services/budget-engine";
 import {
@@ -922,7 +923,17 @@ export function registerCurrentFinancesRoutes(app: Express): void {
         ghostPairsDetected = ghostPairs.length;
       }
       
-      // Step 5: Detect Recurring Patterns
+      // Step 5b: Run Transaction Reconciliation (detect bounced payments, refunds, returns)
+      // This is separate from ghost pair detection and handles returned direct debits
+      try {
+        const reconciliationResult = await reconcileTransactions(userId);
+        console.log(`[Initialize Analysis] Reconciliation complete: ${reconciliationResult.bouncedPaymentsDetected} bounced payments, ${reconciliationResult.refundsDetected} refunds, ${reconciliationResult.transfersDetected} transfers`);
+        ghostPairsDetected += reconciliationResult.bouncedPaymentsDetected;
+      } catch (reconcileError: any) {
+        console.error(`[Initialize Analysis] Error during reconciliation:`, reconcileError.message);
+      }
+      
+      // Step 6: Detect Recurring Patterns
       let recurringPatternsDetected = 0;
       try {
         const freshTransactions = await storage.getEnrichedTransactionsByUserId(userId);
@@ -1404,6 +1415,49 @@ export function registerCurrentFinancesRoutes(app: Express): void {
     } catch (error: any) {
       console.error("[Current Finances] Error in reanalyse-all:", error);
       res.status(500).json({ message: "Failed to reanalyse accounts" });
+    }
+  });
+
+  /**
+   * POST /api/current-finances/run-reconciliation
+   * Runs transaction reconciliation to detect bounced payments, refunds, and transfers
+   * on existing transactions. This is useful for fixing data that was processed before
+   * reconciliation was added to the pipeline.
+   */
+  app.post("/api/current-finances/run-reconciliation", requireAuth, async (req, res) => {
+    try {
+      const userId = (req.user as any).id;
+
+      console.log(`[Current Finances] Running reconciliation for user ${userId}`);
+
+      // Run the reconciliation
+      const result = await reconcileTransactions(userId);
+
+      console.log(`[Current Finances] Reconciliation complete: ${result.bouncedPaymentsDetected} bounced payments, ${result.refundsDetected} refunds, ${result.transfersDetected} transfers`);
+
+      // Recalibrate budgets for affected accounts
+      if (result.affectedAccountIds.size > 0) {
+        const items = await storage.getTrueLayerItemsByUserId(userId);
+        for (const item of items) {
+          if (result.affectedAccountIds.has(item.id)) {
+            await recalibrateAccountBudget(item);
+          }
+        }
+        await recalculateUserBudgetFromAccounts(userId);
+      }
+
+      res.json({
+        success: true,
+        bouncedPaymentsDetected: result.bouncedPaymentsDetected,
+        refundsDetected: result.refundsDetected,
+        transfersDetected: result.transfersDetected,
+        transactionsUpdated: result.transactionsUpdated,
+        accountsAffected: result.affectedAccountIds.size,
+        message: `Reconciliation complete: ${result.bouncedPaymentsDetected} bounced payments, ${result.refundsDetected} refunds, ${result.transfersDetected} transfers detected.`,
+      });
+    } catch (error: any) {
+      console.error("[Current Finances] Error in reconciliation:", error);
+      res.status(500).json({ message: "Failed to run reconciliation" });
     }
   });
 
