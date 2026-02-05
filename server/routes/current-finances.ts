@@ -296,6 +296,7 @@ export function registerCurrentFinancesRoutes(app: Express): void {
       }
       
       // Build linked transaction details for ghost pairs
+      // Must iterate through ALL transactions (including filtered ones) to build complete map
       for (const tx of allItemTransactions) {
         if (tx.linkedTransactionId) {
           // Find the linked transaction across all user's accounts
@@ -313,6 +314,7 @@ export function registerCurrentFinancesRoutes(app: Express): void {
           }
         }
       }
+      console.log(`[Current Finances] Built linked transaction details map with ${linkedTransactionsMap.size} entries`);
       
       const transactionCount = transactions.filter(tx => tx.transactionType !== "transfer" && !tx.isInternalTransfer).length;
       

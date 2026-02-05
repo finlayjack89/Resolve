@@ -36,6 +36,7 @@ interface MonthGroup {
   totalInCents: number;
   totalOutCents: number;
   netFlowCents: number;
+  transferVolumeCents: number;
 }
 
 interface AccountLedgerProps {
@@ -101,12 +102,19 @@ function groupTransactionsByMonth(transactions: LedgerTransaction[]): MonthGroup
       ? `${format(firstDate, "MMMM")} (Month to Date)` 
       : format(firstDate, "MMMM yyyy");
 
+    const isGhostOrTransfer = (tx: LedgerTransaction) => 
+      tx.isGhostTransaction === true || tx.isInternalTransfer === true;
+
     const totalInCents = txs
-      .filter(tx => tx.entryType === "incoming")
+      .filter(tx => tx.entryType === "incoming" && !isGhostOrTransfer(tx))
       .reduce((sum, tx) => sum + Math.abs(tx.amountCents), 0);
     
     const totalOutCents = txs
-      .filter(tx => tx.entryType === "outgoing")
+      .filter(tx => tx.entryType === "outgoing" && !isGhostOrTransfer(tx))
+      .reduce((sum, tx) => sum + Math.abs(tx.amountCents), 0);
+
+    const transferVolumeCents = txs
+      .filter(tx => isGhostOrTransfer(tx))
       .reduce((sum, tx) => sum + Math.abs(tx.amountCents), 0);
 
     const netFlowCents = totalInCents - totalOutCents;
@@ -122,6 +130,7 @@ function groupTransactionsByMonth(transactions: LedgerTransaction[]): MonthGroup
       totalInCents,
       totalOutCents,
       netFlowCents,
+      transferVolumeCents,
     };
   });
 }
@@ -167,6 +176,18 @@ export function AccountLedger({ transactions, currency, showCategoryBreakdown = 
                       {formatCurrency(month.totalOutCents, currency)}
                     </span>
                   </div>
+                  {month.transferVolumeCents > 0 && (
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <span className="text-xs text-muted-foreground cursor-help" data-testid={`ledger-transfers-${month.monthKey}`}>
+                          Excl. {formatCurrency(month.transferVolumeCents, currency)} transfers
+                        </span>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        <p>Internal transfers between your accounts are excluded from these totals to show true income and spending.</p>
+                      </TooltipContent>
+                    </Tooltip>
+                  )}
                 </div>
               </div>
             </AccordionTrigger>
@@ -181,7 +202,7 @@ export function AccountLedger({ transactions, currency, showCategoryBreakdown = 
                   return (
                     <div 
                       key={tx.id} 
-                      className={`flex items-center justify-between px-4 py-3 ${isTransfer || isGhost ? "opacity-60" : ""}`}
+                      className={`flex items-center justify-between px-4 py-3 ${isTransfer || isGhost ? "opacity-50" : ""}`}
                       data-testid={`ledger-tx-${tx.id}`}
                       data-transfer={isTransfer}
                       data-ghost={isGhost}

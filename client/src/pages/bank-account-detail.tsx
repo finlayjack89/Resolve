@@ -173,6 +173,7 @@ interface MonthGroup {
   transactions: EnrichedTransactionDetail[];
   totalIncomeCents: number;
   totalOutgoingCents: number;
+  transferVolumeCents: number;
   categoryBreakdown: {
     category: string;
     transactions: EnrichedTransactionDetail[];
@@ -204,11 +205,17 @@ function groupTransactionsByMonth(transactions: EnrichedTransactionDetail[]): Mo
       ? `${format(firstDate, "MMMM")} (MTD)` 
       : format(firstDate, "MMMM yyyy");
 
+    const isGhostOrTransfer = (tx: EnrichedTransactionDetail) => 
+      tx.isGhostTransaction === true || tx.isInternalTransfer === true;
+
     const totalIncomeCents = txs
-      .filter(tx => tx.entryType === "incoming")
+      .filter(tx => tx.entryType === "incoming" && !isGhostOrTransfer(tx))
       .reduce((sum, tx) => sum + Math.abs(tx.amountCents), 0);
     const totalOutgoingCents = txs
-      .filter(tx => tx.entryType === "outgoing")
+      .filter(tx => tx.entryType === "outgoing" && !isGhostOrTransfer(tx))
+      .reduce((sum, tx) => sum + Math.abs(tx.amountCents), 0);
+    const transferVolumeCents = txs
+      .filter(tx => isGhostOrTransfer(tx))
       .reduce((sum, tx) => sum + Math.abs(tx.amountCents), 0);
 
     const categoryMap = new Map<string, EnrichedTransactionDetail[]>();
@@ -239,6 +246,7 @@ function groupTransactionsByMonth(transactions: EnrichedTransactionDetail[]): Mo
       }),
       totalIncomeCents,
       totalOutgoingCents,
+      transferVolumeCents,
       categoryBreakdown,
     };
   });
@@ -625,7 +633,7 @@ function TransactionTable({ transactions, currency }: { transactions: EnrichedTr
               <TableRow 
                 key={tx.id} 
                 data-testid={`row-transaction-${tx.id}`}
-                className={isGhost ? "opacity-60" : ""}
+                className={isGhost ? "opacity-50" : ""}
               >
                 <TableCell className="text-muted-foreground">
                   {tx.transactionDate ? format(new Date(tx.transactionDate), "MMM d, yyyy") : "—"}
@@ -742,6 +750,18 @@ function MonthlyBreakdown({ transactions, currency }: { transactions: EnrichedTr
                     <span className="text-sm font-mono font-medium" data-testid={`month-outgoing-${month.monthKey}`}>
                       -{formatCurrency(month.totalOutgoingCents, currency)}
                     </span>
+                  )}
+                  {month.transferVolumeCents > 0 && (
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <span className="text-xs text-muted-foreground cursor-help" data-testid={`month-transfers-${month.monthKey}`}>
+                          Excl. {formatCurrency(month.transferVolumeCents, currency)} transfers
+                        </span>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        <p>Internal transfers between your accounts are excluded from these totals to show true income and spending.</p>
+                      </TooltipContent>
+                    </Tooltip>
                   )}
                 </div>
               </div>
