@@ -40,6 +40,7 @@ import {
   Info
 } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { formatCurrency } from "@/lib/format";
 import { useAuth } from "@/lib/auth-context";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -233,7 +234,10 @@ function groupTransactionsByMonth(transactions: EnrichedTransactionDetail[]): Mo
         if (!a.transactionDate || !b.transactionDate) return 0;
         return new Date(b.transactionDate).getTime() - new Date(a.transactionDate).getTime();
       }),
-      totalCents: catTxs.reduce((sum, tx) => sum + Math.abs(tx.amountCents), 0),
+      // Exclude ghost transactions from category totals (same as monthly totals)
+      totalCents: catTxs
+        .filter(tx => !tx.isGhostTransaction)
+        .reduce((sum, tx) => sum + Math.abs(tx.amountCents), 0),
     })).sort((a, b) => b.totalCents - a.totalCents);
 
     return {
@@ -647,15 +651,15 @@ function TransactionTable({ transactions, currency }: { transactions: EnrichedTr
                       <div className="flex items-center gap-2">
                         <p className="font-medium truncate">{tx.merchantCleanName || tx.originalDescription}</p>
                         {isGhost && (
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <Badge variant="outline" className="gap-1 text-xs shrink-0 border-purple-300 text-purple-600 dark:border-purple-700 dark:text-purple-400" data-testid={`badge-ghost-${tx.id}`}>
+                          <Popover>
+                            <PopoverTrigger asChild>
+                              <Badge variant="outline" className="gap-1 text-xs shrink-0 border-purple-300 text-purple-600 dark:border-purple-700 dark:text-purple-400 cursor-pointer" data-testid={`badge-ghost-${tx.id}`}>
                                 <Ghost className="h-3 w-3" />
                                 Ghost
                                 <Info className="h-3 w-3" />
                               </Badge>
-                            </TooltipTrigger>
-                            <TooltipContent className="max-w-xs">
+                            </PopoverTrigger>
+                            <PopoverContent className="max-w-xs">
                               <p className="font-medium mb-1">Internal Transfer</p>
                               <p className="text-sm text-muted-foreground mb-2">
                                 This transaction is an internal transfer between your accounts. It appears in your ledger but is excluded from income/expense totals.
@@ -668,8 +672,8 @@ function TransactionTable({ transactions, currency }: { transactions: EnrichedTr
                                   <p>Amount: {formatCurrency(Math.abs(tx.linkedTransactionDetails.amount), currency)}</p>
                                 </div>
                               )}
-                            </TooltipContent>
-                          </Tooltip>
+                            </PopoverContent>
+                          </Popover>
                         )}
                       </div>
                       <div className="flex items-center gap-2 flex-wrap">
@@ -787,7 +791,7 @@ function MonthlyBreakdown({ transactions, currency }: { transactions: EnrichedTr
                           return (
                             <div 
                               key={tx.id} 
-                              className={`flex items-center justify-between py-1.5 text-sm ${isGhost ? "opacity-60" : ""}`}
+                              className={`flex items-center justify-between py-1.5 text-sm ${isGhost ? "opacity-50" : ""}`}
                               data-testid={`monthly-tx-${tx.id}`}
                             >
                               <div className="flex items-center gap-2 min-w-0 flex-1">
@@ -796,14 +800,15 @@ function MonthlyBreakdown({ transactions, currency }: { transactions: EnrichedTr
                                 )}
                                 <span className="truncate">{tx.merchantCleanName || tx.originalDescription}</span>
                                 {isGhost && (
-                                  <Tooltip>
-                                    <TooltipTrigger asChild>
-                                      <Badge variant="outline" className="gap-1 text-xs shrink-0 border-purple-300 text-purple-600 dark:border-purple-700 dark:text-purple-400" data-testid={`badge-ghost-monthly-${tx.id}`}>
+                                  <Popover>
+                                    <PopoverTrigger asChild>
+                                      <Badge variant="outline" className="gap-1 text-xs shrink-0 border-purple-300 text-purple-600 dark:border-purple-700 dark:text-purple-400 cursor-pointer" data-testid={`badge-ghost-monthly-${tx.id}`}>
                                         <Ghost className="h-2.5 w-2.5" />
                                         Ghost
+                                        <Info className="h-2.5 w-2.5" />
                                       </Badge>
-                                    </TooltipTrigger>
-                                    <TooltipContent className="max-w-xs">
+                                    </PopoverTrigger>
+                                    <PopoverContent className="max-w-xs">
                                       <p className="font-medium mb-1">Internal Transfer</p>
                                       <p className="text-sm text-muted-foreground">
                                         This transaction is an internal transfer between your accounts.
@@ -812,10 +817,12 @@ function MonthlyBreakdown({ transactions, currency }: { transactions: EnrichedTr
                                         <div className="text-sm border-t pt-2 mt-2">
                                           <p className="font-medium">Matching transaction:</p>
                                           <p>Account: {tx.linkedTransactionDetails.accountName}</p>
+                                          <p>Date: {format(new Date(tx.linkedTransactionDetails.date), "MMM d, yyyy")}</p>
+                                          <p>Amount: {formatCurrency(Math.abs(tx.linkedTransactionDetails.amount), currency)}</p>
                                         </div>
                                       )}
-                                    </TooltipContent>
-                                  </Tooltip>
+                                    </PopoverContent>
+                                  </Popover>
                                 )}
                                 <span className="text-muted-foreground shrink-0">
                                   {tx.transactionDate ? format(new Date(tx.transactionDate), "MMM d") : "—"}

@@ -147,6 +147,10 @@ function buildCategoryBreakdown(transactions: EnrichedTransaction[]): CategoryBr
   let grandTotal = 0;
 
   for (const tx of transactions) {
+    // Skip ghost transactions (internal transfers, returned DDs) from category totals
+    const isGhost = tx.transactionType === "transfer" || tx.transactionType === "bounced_payment" || tx.isInternalTransfer === true;
+    if (isGhost) continue;
+    
     const category = tx.ukCategory || UKBudgetCategory.OTHER;
     const current = categoryTotals.get(category) || { totalCents: 0, count: 0 };
     current.totalCents += Math.abs(tx.amountCents);
@@ -801,6 +805,9 @@ export function registerCurrentFinancesRoutes(app: Express): void {
           .map(acc => acc.lenderName!);
         
         try {
+          // Use the first staged item's ID for enrichment (enrichment service requires this field)
+          const primaryItemId = stagedItems.length > 0 ? stagedItems[0].id : "unknown";
+          
           const enrichmentResponse = await fetch(`${PYTHON_API_URL_STAGED}/enrich-transactions`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -816,10 +823,10 @@ export function registerCurrentFinancesRoutes(app: Express): void {
                 timestamp: tx.transactionDate,
               })),
               user_id: userId,
+              truelayer_item_id: primaryItemId,
               analysis_months: 6,
               account_holder_name: accountHolderName,
               country: userCountry,
-              nylas_grant_id: nylasGrantId,
             }),
           });
           
